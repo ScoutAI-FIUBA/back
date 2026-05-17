@@ -21,6 +21,14 @@ class UserRepositoryPort(ABC):
     def get_by_id(self, user_id: str) -> User | None:
         raise NotImplementedError
 
+    @abstractmethod
+    def soft_delete(self, user_id: str, deleted_at: datetime) -> User | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def hard_delete(self, user_id: str) -> bool:
+        raise NotImplementedError
+
 
 class RefreshSessionRepositoryPort(ABC):
     @abstractmethod
@@ -55,6 +63,10 @@ class RefreshSessionRepositoryPort(ABC):
 
     @abstractmethod
     def mark_reuse_detected(self, session_id: str, detected_at: datetime) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def revoke_all_by_user_id(self, user_id: str, revoked_at: datetime) -> int:
         raise NotImplementedError
 
 

@@ -10,7 +10,9 @@ import psycopg
 
 from src.application.auth.ports import ClockPort, IdGeneratorPort, UnitOfWorkPort
 from src.application.auth.use_cases import (
+    DeleteCurrentUserUseCase,
     GetCurrentUserUseCase,
+    HardDeleteUserUseCase,
     LoginUseCase,
     LogoutUseCase,
     RefreshSessionUseCase,
@@ -130,8 +132,21 @@ def create_app() -> FastAPI:
                 uow=uow,
             ),
             current_user_use_case=GetCurrentUserUseCase(users=users_repo),
+            delete_current_user_use_case=DeleteCurrentUserUseCase(
+                users=users_repo,
+                refresh_sessions=refresh_repo,
+                clock=clock,
+                uow=uow,
+            ),
             access_token_resolver=access_token_resolver.resolve_subject,
         )
+    )
+
+    app.state.auth_hard_delete_user_use_case = HardDeleteUserUseCase(
+        users=users_repo,
+        refresh_sessions=refresh_repo,
+        clock=clock,
+        uow=uow,
     )
 
     @app.get("/health")

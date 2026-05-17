@@ -7,6 +7,7 @@ import unittest
 from fastapi import Response
 
 from src.application.auth.use_cases import (
+    DeleteCurrentUserUseCase,
     GetCurrentUserUseCase,
     LoginUseCase,
     LogoutUseCase,
@@ -32,6 +33,22 @@ class _UserRepo:
 
     def get_by_id(self, user_id: str):
         return self.by_id.get(user_id)
+
+    def soft_delete(self, user_id: str, deleted_at: datetime):
+        user = self.by_id.get(user_id)
+        if user is None or user.deleted_at is not None:
+            return None
+        deleted = User(**{**user.__dict__, "deleted_at": deleted_at, "updated_at": deleted_at})
+        self.by_id[user_id] = deleted
+        self.by_email[deleted.email_normalized] = deleted
+        return deleted
+
+    def hard_delete(self, user_id: str):
+        user = self.by_id.pop(user_id, None)
+        if user is None:
+            return False
+        self.by_email.pop(user.email_normalized, None)
+        return True
 
 
 class _RefreshRepo:
@@ -78,6 +95,14 @@ class _RefreshRepo:
             if session.id == session_id:
                 self.sessions[idx] = RefreshSession(**{**session.__dict__, "reuse_detected_at": detected_at})
                 return
+
+    def revoke_all_by_user_id(self, user_id: str, revoked_at: datetime):
+        affected = 0
+        for idx, session in enumerate(self.sessions):
+            if session.user_id == user_id and session.revoked_at is None:
+                self.sessions[idx] = RefreshSession(**{**session.__dict__, "revoked_at": revoked_at})
+                affected += 1
+        return affected
 
 
 class _Hasher:
@@ -164,12 +189,14 @@ class TestAuthRegisterLoginHTTP(unittest.TestCase):
             uow=_Uow(),
         )
         me = GetCurrentUserUseCase(users=users)
+        delete_me = DeleteCurrentUserUseCase(users=users, refresh_sessions=refresh_repo, clock=_Clock(), uow=_Uow())
         router = create_auth_router(
             register_use_case=register,
             login_use_case=login,
             refresh_use_case=refresh,
             logout_use_case=logout,
             current_user_use_case=me,
+            delete_current_user_use_case=delete_me,
             access_token_resolver=lambda _: "id-1",
         )
         register_endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/register"))

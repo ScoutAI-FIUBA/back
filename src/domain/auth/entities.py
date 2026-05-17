@@ -14,6 +14,7 @@ class User:
     auth_provider_id: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    deleted_at: datetime | None = None
 
 
 @dataclass(frozen=True)

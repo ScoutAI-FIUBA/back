@@ -5,6 +5,7 @@
 ### In Scope
 - User base: `email`, `password_hash`, `email_verified=false`, `role='user'`, `auth_provider_id` nullable, timestamps.
 - Endpoints: `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me`.
+- Endpoint adicional: `DELETE /auth/me` (soft delete autenticado).
 - Access token JWT (TTL 15m).
 - Refresh token opaco con rotación (TTL 7d).
 - Logout con invalidación de refresh.
@@ -14,7 +15,6 @@
 ### Out of Scope
 - Verificación de email end-to-end.
 - RBAC completo.
-- Soft delete.
 - MFA/SSO.
 
 ## Requirements (verificables)
@@ -94,7 +94,28 @@ The system **MUST** return authenticated user identity for valid access JWT.
 - **WHEN** `GET /auth/me`
 - **THEN** API returns auth error envelope
 
-### 6) Unified Error Contract
+#### Scenario: Soft-deleted user on `/auth/me`
+- **GIVEN** valid JWT that belongs to a soft-deleted user
+- **WHEN** `GET /auth/me`
+- **THEN** API returns auth error envelope
+
+### 6) Account Deletion
+The system **MUST** support dual deletion contracts:
+- `DELETE /auth/me` performs SOFT DELETE (`deleted_at`, `updated_at`) and revokes all active refresh sessions for the user.
+- Internal/admin operation performs HARD DELETE (physical purge) and revokes all active refresh sessions.
+
+#### Scenario: Soft delete success
+- **GIVEN** authenticated active user
+- **WHEN** `DELETE /auth/me`
+- **THEN** user is soft-deleted and refresh sessions are revoked
+- **AND** subsequent login fails
+
+#### Scenario: Hard delete success
+- **GIVEN** existing user targeted by internal/admin operation
+- **WHEN** hard delete is executed
+- **THEN** user is physically removed and refresh sessions are revoked
+
+### 7) Unified Error Contract
 All auth endpoints **MUST** return:
 
 ```json
@@ -127,6 +148,12 @@ All auth endpoints **MUST** return:
 ### `GET /auth/me`
 - Requires valid access JWT.
 - Returns authenticated identity without secrets.
+
+### `DELETE /auth/me`
+- Requires valid access JWT.
+- Marks user as soft-deleted (`deleted_at`, `updated_at`).
+- Revokes all active refresh sessions for that user.
+- Returns `204 No Content`.
 
 ## Security Invariants
 

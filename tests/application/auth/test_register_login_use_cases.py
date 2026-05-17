@@ -26,6 +26,22 @@ class _UserRepo:
     def get_by_id(self, user_id: str) -> User | None:
         return self.by_id.get(user_id)
 
+    def soft_delete(self, user_id: str, deleted_at: datetime) -> User | None:
+        user = self.by_id.get(user_id)
+        if user is None or user.deleted_at is not None:
+            return None
+        deleted = User(**{**user.__dict__, "deleted_at": deleted_at, "updated_at": deleted_at})
+        self.by_id[user_id] = deleted
+        self.by_email[deleted.email_normalized] = deleted
+        return deleted
+
+    def hard_delete(self, user_id: str) -> bool:
+        user = self.by_id.pop(user_id, None)
+        if user is None:
+            return False
+        self.by_email.pop(user.email_normalized, None)
+        return True
+
 
 class _RefreshRepo:
     def __init__(self) -> None:
@@ -71,6 +87,14 @@ class _RefreshRepo:
             if session.id == session_id:
                 self.sessions[idx] = RefreshSession(**{**session.__dict__, "reuse_detected_at": detected_at})
                 return
+
+    def revoke_all_by_user_id(self, user_id: str, revoked_at: datetime) -> int:
+        affected = 0
+        for idx, session in enumerate(self.sessions):
+            if session.user_id == user_id and session.revoked_at is None:
+                self.sessions[idx] = RefreshSession(**{**session.__dict__, "revoked_at": revoked_at})
+                affected += 1
+        return affected
 
 
 class _Hasher:
@@ -193,6 +217,31 @@ class TestRegisterLoginUseCases(unittest.TestCase):
         self.assertEqual(result.user.user_id, "u1")
         self.assertEqual(len(refresh_repo.sessions), 1)
         self.assertEqual(refresh_repo.sessions[0].token_hash, "refresh-hash::refresh-plain")
+
+    def test_login_rejects_soft_deleted_user(self) -> None:
+        users = _UserRepo()
+        users.create(
+            User(
+                id="u1",
+                email_normalized="user@example.com",
+                password_hash="hashed::right-pass",
+                deleted_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
+            )
+        )
+        use_case = LoginUseCase(
+            users=users,
+            refresh_sessions=_RefreshRepo(),
+            password_hasher=_Hasher(),
+            token_issuer=_TokenIssuer(),
+            refresh_tokens=_RefreshTokens(),
+            clock=_Clock(),
+            ids=_Ids(),
+            uow=_Uow(),
+        )
+
+        with self.assertRaises(AuthError) as ctx:
+            use_case.execute(LoginCommand(email="user@example.com", password="right-pass"))
+        self.assertEqual(ctx.exception.code, AUTH_INVALID_CREDENTIALS)
 
 
 if __name__ == "__main__":

@@ -62,6 +62,16 @@ class GetCurrentUserQuery:
     user_id: str
 
 
+@dataclass(frozen=True)
+class DeleteCurrentUserCommand:
+    user_id: str
+
+
+@dataclass(frozen=True)
+class HardDeleteUserCommand:
+    user_id: str
+
+
 class RegisterUserUseCase:
     def __init__(
         self,
@@ -143,7 +153,11 @@ class LoginUseCase:
     def execute(self, command: LoginCommand) -> LoginResult:
         email_normalized = Email(command.email).value
         user = self._users.get_by_email(email_normalized)
-        if user is None or not self._password_hasher.verify(command.password, user.password_hash):
+        if (
+            user is None
+            or user.deleted_at is not None
+            or not self._password_hasher.verify(command.password, user.password_hash)
+        ):
             raise AuthError(
                 code=AUTH_INVALID_CREDENTIALS,
                 message="Invalid credentials",
@@ -302,7 +316,7 @@ class GetCurrentUserUseCase:
 
     def execute(self, query: GetCurrentUserQuery) -> AuthIdentity:
         user = self._users.get_by_id(query.user_id)
-        if user is None:
+        if user is None or user.deleted_at is not None:
             raise AuthError(code=AUTH_UNAUTHORIZED, message="User not found")
         return AuthIdentity(
             user_id=user.id,
@@ -310,3 +324,46 @@ class GetCurrentUserUseCase:
             role=user.role,
             email_verified=user.email_verified,
         )
+
+
+class DeleteCurrentUserUseCase:
+    def __init__(
+        self,
+        *,
+        users: UserRepositoryPort,
+        refresh_sessions: RefreshSessionRepositoryPort,
+        clock: ClockPort,
+        uow: UnitOfWorkPort,
+    ) -> None:
+        self._users = users
+        self._refresh_sessions = refresh_sessions
+        self._clock = clock
+        self._uow = uow
+
+    def execute(self, command: DeleteCurrentUserCommand) -> None:
+        now = self._clock.now()
+        with self._uow.transaction():
+            deleted = self._users.soft_delete(command.user_id, now)
+            if deleted is None:
+                raise AuthError(code=AUTH_UNAUTHORIZED, message="User not found")
+            self._refresh_sessions.revoke_all_by_user_id(command.user_id, now)
+
+
+class HardDeleteUserUseCase:
+    def __init__(
+        self,
+        *,
+        users: UserRepositoryPort,
+        refresh_sessions: RefreshSessionRepositoryPort,
+        clock: ClockPort,
+        uow: UnitOfWorkPort,
+    ) -> None:
+        self._users = users
+        self._refresh_sessions = refresh_sessions
+        self._clock = clock
+        self._uow = uow
+
+    def execute(self, command: HardDeleteUserCommand) -> None:
+        with self._uow.transaction():
+            self._refresh_sessions.revoke_all_by_user_id(command.user_id, self._clock.now())
+            self._users.hard_delete(command.user_id)

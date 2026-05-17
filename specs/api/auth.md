@@ -77,6 +77,23 @@
 }
 ```
 
+### DELETE /auth/me
+- Requires `Authorization: Bearer <access-token>`.
+- Performs soft delete for the authenticated user.
+- Side effects:
+  - sets `users.deleted_at`
+  - updates `users.updated_at`
+  - revokes all active refresh sessions for that user
+- Response: `204 No Content`.
+
+## Internal/Admin Operations (no public endpoint)
+
+### Hard delete user
+- Implemented as an internal application operation (not exposed in `/auth` router).
+- Behavior:
+  - revoke all active refresh sessions for target user
+  - physically delete user record
+
 ## JWT Access Token
 - Required claims: `sub`, `iss`, `aud`, `iat`, `exp`, `jti`
 - Additional claims: `role`, `email_verified`

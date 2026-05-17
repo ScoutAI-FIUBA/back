@@ -29,6 +29,7 @@ def _row_to_user(row: dict[str, Any] | None) -> User | None:
         auth_provider_id=row.get("auth_provider_id"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
+        deleted_at=row.get("deleted_at"),
     )
 
 
@@ -61,10 +62,10 @@ class PostgresUserRepository:
                 """
                 INSERT INTO users (
                     id, email_normalized, password_hash, email_verified,
-                    role, auth_provider_id, created_at, updated_at
+                    role, auth_provider_id, created_at, updated_at, deleted_at
                 ) VALUES (
                     %(id)s, %(email_normalized)s, %(password_hash)s, %(email_verified)s,
-                    %(role)s, %(auth_provider_id)s, %(created_at)s, %(updated_at)s
+                    %(role)s, %(auth_provider_id)s, %(created_at)s, %(updated_at)s, %(deleted_at)s
                 )
                 RETURNING *
                 """,
@@ -85,6 +86,24 @@ class PostgresUserRepository:
         with self._connection.cursor(row_factory=dict) as cur:
             cur.execute("SELECT * FROM users WHERE id = %(id)s", {"id": user_id})
             return _row_to_user(cur.fetchone())
+
+    def soft_delete(self, user_id: str, deleted_at: datetime) -> User | None:
+        with self._connection.cursor(row_factory=dict) as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET deleted_at = %(deleted_at)s, updated_at = %(deleted_at)s
+                WHERE id = %(id)s AND deleted_at IS NULL
+                RETURNING *
+                """,
+                {"id": user_id, "deleted_at": deleted_at},
+            )
+            return _row_to_user(cur.fetchone())
+
+    def hard_delete(self, user_id: str) -> bool:
+        with self._connection.cursor() as cur:
+            cur.execute("DELETE FROM users WHERE id = %(id)s", {"id": user_id})
+            return cur.rowcount > 0
 
 
 class PostgresRefreshSessionRepository:
@@ -193,3 +212,15 @@ class PostgresRefreshSessionRepository:
                 """,
                 {"id": session_id, "detected_at": detected_at},
             )
+
+    def revoke_all_by_user_id(self, user_id: str, revoked_at: datetime) -> int:
+        with self._connection.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auth_refresh_sessions
+                SET revoked_at = %(revoked_at)s
+                WHERE user_id = %(user_id)s AND revoked_at IS NULL
+                """,
+                {"user_id": user_id, "revoked_at": revoked_at},
+            )
+            return cur.rowcount

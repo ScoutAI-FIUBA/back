@@ -55,6 +55,7 @@ class TestPostgresRepositories(unittest.TestCase):
             "auth_provider_id": None,
             "created_at": None,
             "updated_at": None,
+            "deleted_at": None,
         }
         by_email = repo.get_by_email("user@example.com")
         self.assertIsNotNone(by_email)
@@ -111,6 +112,41 @@ class TestPostgresRepositories(unittest.TestCase):
         affected = repo.revoke_family("family-1", datetime.now(timezone.utc))
         self.assertEqual(affected, 3)
         self.assertIn("family_id", conn.executed[0][1])
+
+    def test_soft_delete_and_hard_delete_queries(self) -> None:
+        conn = _Connection()
+        repo = PostgresUserRepository(connection=conn)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        conn.next_row = {
+            "id": "u1",
+            "email_normalized": "user@example.com",
+            "password_hash": "hash",
+            "email_verified": False,
+            "role": "user",
+            "auth_provider_id": None,
+            "created_at": now,
+            "updated_at": now,
+            "deleted_at": now,
+        }
+
+        deleted = repo.soft_delete("u1", now)
+        self.assertIsNotNone(deleted)
+        assert deleted is not None
+        self.assertIsNotNone(deleted.deleted_at)
+        self.assertIn("UPDATE users", conn.executed[0][0])
+
+        conn.next_rowcount = 1
+        hard_deleted = repo.hard_delete("u1")
+        self.assertTrue(hard_deleted)
+        self.assertIn("DELETE FROM users", conn.executed[1][0])
+
+    def test_revoke_all_by_user_id_returns_affected_rows(self) -> None:
+        conn = _Connection()
+        conn.next_rowcount = 2
+        repo = PostgresRefreshSessionRepository(connection=conn)
+        affected = repo.revoke_all_by_user_id("u1", datetime.now(timezone.utc))
+        self.assertEqual(affected, 2)
+        self.assertIn("user_id", conn.executed[0][1])
 
 
 if __name__ == "__main__":

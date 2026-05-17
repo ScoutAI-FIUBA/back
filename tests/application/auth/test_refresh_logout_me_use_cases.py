@@ -6,8 +6,12 @@ import unittest
 
 from src.application.auth.errors import AUTH_REFRESH_REUSED, AUTH_TOKEN_INVALID, AUTH_UNAUTHORIZED, AuthError
 from src.application.auth.use_cases import (
+    DeleteCurrentUserCommand,
+    DeleteCurrentUserUseCase,
     GetCurrentUserQuery,
     GetCurrentUserUseCase,
+    HardDeleteUserCommand,
+    HardDeleteUserUseCase,
     LogoutCommand,
     LogoutUseCase,
     RefreshSessionCommand,
@@ -30,6 +34,17 @@ class _UserRepo:
 
     def get_by_id(self, user_id: str) -> User | None:
         return self.by_id.get(user_id)
+
+    def soft_delete(self, user_id: str, deleted_at: datetime) -> User | None:
+        user = self.by_id.get(user_id)
+        if user is None or user.deleted_at is not None:
+            return None
+        deleted = User(**{**user.__dict__, "deleted_at": deleted_at, "updated_at": deleted_at})
+        self.by_id[user_id] = deleted
+        return deleted
+
+    def hard_delete(self, user_id: str) -> bool:
+        return self.by_id.pop(user_id, None) is not None
 
 
 class _RefreshRepo:
@@ -76,6 +91,14 @@ class _RefreshRepo:
             if session.id == session_id:
                 self.sessions[idx] = RefreshSession(**{**session.__dict__, "reuse_detected_at": detected_at})
                 return
+
+    def revoke_all_by_user_id(self, user_id: str, revoked_at: datetime) -> int:
+        affected = 0
+        for idx, session in enumerate(self.sessions):
+            if session.user_id == user_id and session.revoked_at is None:
+                self.sessions[idx] = RefreshSession(**{**session.__dict__, "revoked_at": revoked_at})
+                affected += 1
+        return affected
 
 
 class _TokenIssuer:
@@ -223,6 +246,65 @@ class TestRefreshLogoutMeUseCases(unittest.TestCase):
         with self.assertRaises(AuthError) as ctx:
             use_case.execute(GetCurrentUserQuery(user_id="missing"))
         self.assertEqual(ctx.exception.code, AUTH_UNAUTHORIZED)
+
+    def test_me_soft_deleted_user_unauthorized(self) -> None:
+        users = _UserRepo()
+        users.create(
+            User(
+                id="u1",
+                email_normalized="u@example.com",
+                password_hash="h",
+                deleted_at=datetime(2025, 12, 31, tzinfo=timezone.utc),
+            )
+        )
+        use_case = GetCurrentUserUseCase(users=users)
+        with self.assertRaises(AuthError) as ctx:
+            use_case.execute(GetCurrentUserQuery(user_id="u1"))
+        self.assertEqual(ctx.exception.code, AUTH_UNAUTHORIZED)
+
+    def test_delete_current_user_soft_deletes_and_revokes_sessions(self) -> None:
+        users = _UserRepo()
+        users.create(User(id="u1", email_normalized="u@example.com", password_hash="h"))
+        refresh_repo = _RefreshRepo()
+        refresh_repo.create(
+            RefreshSession(
+                id="s1",
+                user_id="u1",
+                token_hash="hash::a",
+                token_jti="j1",
+                family_id="f1",
+                issued_at=datetime(2025, 12, 20, tzinfo=timezone.utc),
+                expires_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            )
+        )
+        use_case = DeleteCurrentUserUseCase(users=users, refresh_sessions=refresh_repo, clock=_Clock(), uow=_Uow())
+
+        use_case.execute(DeleteCurrentUserCommand(user_id="u1"))
+
+        self.assertIsNotNone(users.get_by_id("u1").deleted_at)
+        self.assertIsNotNone(refresh_repo.sessions[0].revoked_at)
+
+    def test_hard_delete_user_purges_user_and_revokes_sessions(self) -> None:
+        users = _UserRepo()
+        users.create(User(id="u1", email_normalized="u@example.com", password_hash="h"))
+        refresh_repo = _RefreshRepo()
+        refresh_repo.create(
+            RefreshSession(
+                id="s1",
+                user_id="u1",
+                token_hash="hash::a",
+                token_jti="j1",
+                family_id="f1",
+                issued_at=datetime(2025, 12, 20, tzinfo=timezone.utc),
+                expires_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            )
+        )
+        use_case = HardDeleteUserUseCase(users=users, refresh_sessions=refresh_repo, clock=_Clock(), uow=_Uow())
+
+        use_case.execute(HardDeleteUserCommand(user_id="u1"))
+
+        self.assertIsNone(users.get_by_id("u1"))
+        self.assertIsNotNone(refresh_repo.sessions[0].revoked_at)
 
 
 if __name__ == "__main__":

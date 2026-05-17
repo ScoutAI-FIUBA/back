@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from src.application.auth.errors import AuthError, auth_error_http_status
 from src.application.auth.use_cases import (
+    DeleteCurrentUserCommand,
+    DeleteCurrentUserUseCase,
     GetCurrentUserQuery,
     GetCurrentUserUseCase,
     LoginCommand,
@@ -51,6 +53,7 @@ def create_auth_router(
     refresh_use_case: RefreshSessionUseCase,
     logout_use_case: LogoutUseCase,
     current_user_use_case: GetCurrentUserUseCase,
+    delete_current_user_use_case: DeleteCurrentUserUseCase,
     access_token_resolver: Callable[[str], str],
 ) -> APIRouter:
     router = APIRouter(prefix="/auth", tags=["auth"])
@@ -153,6 +156,16 @@ def create_auth_router(
                     "email_verified": user.email_verified,
                 }
             }
+        except AuthError as exc:
+            return JSONResponse(status_code=auth_error_http_status(exc.code), content=exc.to_envelope())
+
+    @router.delete("/me", response_model=None)
+    def delete_me(authorization: str | None = Header(default=None)):
+        try:
+            token = _extract_bearer_token(authorization)
+            user_id = access_token_resolver(token)
+            delete_current_user_use_case.execute(DeleteCurrentUserCommand(user_id=user_id))
+            return Response(status_code=HTTPStatus.NO_CONTENT)
         except AuthError as exc:
             return JSONResponse(status_code=auth_error_http_status(exc.code), content=exc.to_envelope())
 
