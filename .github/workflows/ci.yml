@@ -47,8 +47,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run unittest suite
-        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Run unittest suites
+        run: |
+          python -m unittest discover -s tests/domain -p "test_*.py"
+          python -m unittest discover -s tests/application -p "test_*.py"
+          python -m unittest discover -s tests/infrastructure -p "test_*.py"
+          python -m unittest discover -s tests/interfaces -p "test_*.py"
 
       - name: Run pytest suite
         run: pytest -q tests
