@@ -74,14 +74,21 @@ class _PsycopgUnitOfWork(UnitOfWorkPort):
             yield
 
 
+def _require_env(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="ScoutAI Backend", version="0.1.0")
 
-    jwt_secret = os.getenv("AUTH_JWT_SECRET", "dev-jwt-secret")
-    refresh_secret = os.getenv("AUTH_REFRESH_SECRET", "dev-refresh-secret")
-    jwt_issuer = os.getenv("AUTH_JWT_ISSUER", "scoutai")
-    jwt_audience = os.getenv("AUTH_JWT_AUDIENCE", "scoutai-client")
-    database_url = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/scoutai")
+    jwt_secret = _require_env("AUTH_JWT_SECRET")
+    refresh_secret = _require_env("AUTH_REFRESH_SECRET")
+    jwt_issuer = _require_env("AUTH_JWT_ISSUER")
+    jwt_audience = _require_env("AUTH_JWT_AUDIENCE")
+    database_url = _require_env("DATABASE_URL")
 
     conn = _LazyConnection(database_url)
     users_repo = PostgresUserRepository(connection=conn)

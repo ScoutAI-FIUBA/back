@@ -42,6 +42,18 @@ class TestMainWiring(unittest.TestCase):
         for path in ("/auth/register", "/auth/login", "/auth/refresh", "/auth/logout", "/auth/me"):
             self.assertIn(path, paths)
 
+    def test_create_app_fails_fast_when_required_env_is_missing(self) -> None:
+        env = {
+            "AUTH_REFRESH_SECRET": "refresh",
+            "AUTH_JWT_ISSUER": "scoutai",
+            "AUTH_JWT_AUDIENCE": "scoutai-client",
+            "DATABASE_URL": "postgresql://test",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "Missing required environment variable: AUTH_JWT_SECRET"):
+                create_app()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,7 +9,25 @@ on:
       - main
 
 jobs:
-  test:
+  unit-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: pytest -q -m "not integration" tests
+
+  environment-setup:
     runs-on: ubuntu-latest
 
     services:
@@ -17,7 +35,7 @@ jobs:
         image: postgres:16
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_PASSWORD: test-only-password
           POSTGRES_DB: scoutai
         ports:
           - 5432:5432
@@ -28,9 +46,9 @@ jobs:
           --health-retries=5
 
     env:
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/scoutai
-      AUTH_JWT_SECRET: ci-jwt-secret
-      AUTH_REFRESH_SECRET: ci-refresh-secret
+      DATABASE_URL: postgresql://postgres:test-only-password@localhost:5432/scoutai
+      AUTH_JWT_SECRET: test-only-jwt-secret
+      AUTH_REFRESH_SECRET: test-only-refresh-secret
       AUTH_JWT_ISSUER: scoutai-ci
       AUTH_JWT_AUDIENCE: scoutai-client
       PYTHONPATH: .
@@ -47,5 +65,65 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run test suite (unit + integration)
-        run: pytest -q tests
+      - name: Apply database migrations
+        run: python scripts/apply_migrations.py
+
+      - name: Mark environment ready
+        run: mkdir -p .ci && touch .ci/env-ready
+
+      - name: Upload setup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: env-ready
+          path: .ci/env-ready
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, environment-setup]
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: scoutai
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d scoutai"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+    env:
+      DATABASE_URL: postgresql://postgres:test-only-password@localhost:5432/scoutai
+      AUTH_JWT_SECRET: test-only-jwt-secret
+      AUTH_REFRESH_SECRET: test-only-refresh-secret
+      AUTH_JWT_ISSUER: scoutai-ci
+      AUTH_JWT_AUDIENCE: scoutai-client
+      PYTHONPATH: .
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download setup artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: env-ready
+          path: .ci
+
+      - name: Apply database migrations
+        run: python scripts/apply_migrations.py
+
+      - name: Run integration tests
+        run: pytest -q -m integration tests/integration
