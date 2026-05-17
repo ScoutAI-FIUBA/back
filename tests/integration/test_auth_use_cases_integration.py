@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import psycopg
 import pytest
 
+from src.application.auth.use_cases import HardDeleteUserCommand
 from src.interfaces.http.main import create_app
 
 
@@ -29,12 +30,14 @@ def _required_env() -> dict[str, str]:
 
 
 def _apply_auth_migration(database_url: str) -> None:
-    migration_file = Path("src/infrastructure/auth/migrations/001_auth_foundation.sql")
-    sql = migration_file.read_text(encoding="utf-8")
+    migration_dir = Path("src/infrastructure/auth/migrations")
+    migration_files = sorted(migration_dir.glob("*.sql"))
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            for migration_file in migration_files:
+                sql = migration_file.read_text(encoding="utf-8")
+                cur.execute(sql)
         conn.commit()
 
 
@@ -240,3 +243,29 @@ def test_delete_me_soft_delete_is_exposed_and_revokes_access(client: TestClient)
     login_after_delete = _login(client, email)
     assert login_after_delete.status_code == 401
     assert login_after_delete.json()["error"]["code"] == "AUTH_INVALID_CREDENTIALS"
+
+
+def test_hard_delete_user_succeeds_when_refresh_sessions_exist(client: TestClient) -> None:
+    env = _required_env()
+    email = f"hard-delete-{uuid4().hex}@example.com"
+    _register(client, email)
+    login = _login(client, email)
+    refresh_token = login.cookies.get("refresh_token")
+    assert refresh_token
+
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {login.json()['access_token']}"})
+    assert me.status_code == 200
+    user_id = me.json()["user"]["id"]
+
+    hard_delete = client.app.state.auth_hard_delete_user_use_case
+    hard_delete.execute(HardDeleteUserCommand(user_id=user_id))
+
+    with psycopg.connect(env["DATABASE_URL"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM users WHERE id = %s", (user_id,))
+            users_count = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM auth_refresh_sessions WHERE user_id = %s", (user_id,))
+            sessions_count = cur.fetchone()[0]
+
+    assert users_count == 0
+    assert sessions_count == 0

@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE TABLE IF NOT EXISTS auth_refresh_sessions (
     id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL REFERENCES users (id),
+    user_id TEXT NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE,
     token_jti TEXT NOT NULL,
     family_id TEXT NOT NULL,

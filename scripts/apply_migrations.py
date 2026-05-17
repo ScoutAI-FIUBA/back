@@ -11,12 +11,14 @@ def main() -> None:
     if not database_url:
         raise RuntimeError("Missing required environment variable: DATABASE_URL")
 
-    migration_file = Path("src/infrastructure/auth/migrations/001_auth_foundation.sql")
-    sql = migration_file.read_text(encoding="utf-8")
+    migration_dir = Path("src/infrastructure/auth/migrations")
+    migration_files = sorted(migration_dir.glob("*.sql"))
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            for migration_file in migration_files:
+                sql = migration_file.read_text(encoding="utf-8")
+                cur.execute(sql)
         conn.commit()
 
 
