@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import unittest
+
+from fastapi import Response
+
+from src.application.auth.errors import AUTH_TOKEN_INVALID, AuthError
+from src.application.auth.use_cases import (
+    GetCurrentUserUseCase,
+    LoginUseCase,
+    LogoutUseCase,
+    RefreshSessionUseCase,
+    RegisterUserUseCase,
+)
+from src.domain.auth.entities import RefreshSession, User
+from src.interfaces.http.auth_router import create_auth_router
+
+
+class _UserRepo:
+    def __init__(self) -> None:
+        self.by_email = {}
+        self.by_id = {}
+
+    def create(self, user):
+        self.by_email[user.email_normalized] = user
+        self.by_id[user.id] = user
+        return user
+
+    def get_by_email(self, email_normalized: str):
+        return self.by_email.get(email_normalized)
+
+    def get_by_id(self, user_id: str):
+        return self.by_id.get(user_id)
+
+
+class _RefreshRepo:
+    def __init__(self) -> None:
+        self.sessions = []
+
+    def create(self, session):
+        self.sessions.append(session)
+        return session
+
+    def get_active_by_token_hash(self, token_hash: str, now: datetime):
+        for session in self.sessions:
+            if session.token_hash == token_hash and session.is_active(now):
+                return session
+        return None
+
+    def get_by_token_hash(self, token_hash: str):
+        for session in self.sessions:
+            if session.token_hash == token_hash:
+                return session
+        return None
+
+    def revoke(self, session_id: str, revoked_at: datetime):
+        for idx, session in enumerate(self.sessions):
+            if session.id == session_id:
+                self.sessions[idx] = RefreshSession(**{**session.__dict__, "revoked_at": revoked_at})
+                return
+
+    def rotate(self, *, old_session_id: str, new_session: RefreshSession, revoked_at: datetime):
+        self.revoke(old_session_id, revoked_at)
+        self.sessions.append(new_session)
+        return new_session
+
+    def revoke_family(self, family_id: str, revoked_at: datetime):
+        return 0
+
+    def mark_reuse_detected(self, session_id: str, detected_at: datetime):
+        return None
+
+
+class _Hasher:
+    def hash(self, plain_password: str) -> str:
+        return f"hashed::{plain_password}"
+
+    def verify(self, plain_password: str, password_hash: str) -> bool:
+        return password_hash == self.hash(plain_password)
+
+
+class _TokenIssuer:
+    def issue_access(self, identity, jti: str, expires_at: datetime) -> str:
+        return f"token-{identity.user_id}-{jti}"
+
+
+class _RefreshTokens:
+    def generate_plain(self) -> str:
+        return "refresh-token"
+
+    def hash(self, token: str) -> str:
+        return f"hash-{token}"
+
+    def fingerprint(self, token: str) -> str:
+        return "fp"
+
+
+class _Clock:
+    def now(self) -> datetime:
+        return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+class _Ids:
+    def __init__(self) -> None:
+        self.value = 0
+
+    def _next(self, prefix: str) -> str:
+        self.value += 1
+        return f"{prefix}-{self.value}"
+
+    def new_id(self) -> str:
+        return self._next("id")
+
+    def new_jti(self) -> str:
+        return self._next("jti")
+
+    def new_family_id(self) -> str:
+        return self._next("family")
+
+
+class _Uow:
+    @contextmanager
+    def transaction(self):
+        yield
+
+
+class TestAuthSessionEndpoints(unittest.TestCase):
+    def _endpoints(self):
+        users = _UserRepo()
+        refresh_repo = _RefreshRepo()
+        register = RegisterUserUseCase(users=users, password_hasher=_Hasher(), clock=_Clock(), ids=_Ids())
+        login = LoginUseCase(
+            users=users,
+            refresh_sessions=refresh_repo,
+            password_hasher=_Hasher(),
+            token_issuer=_TokenIssuer(),
+            refresh_tokens=_RefreshTokens(),
+            clock=_Clock(),
+            ids=_Ids(),
+            uow=_Uow(),
+        )
+        refresh = RefreshSessionUseCase(
+            users=users,
+            refresh_sessions=refresh_repo,
+            token_issuer=_TokenIssuer(),
+            refresh_tokens=_RefreshTokens(),
+            clock=_Clock(),
+            ids=_Ids(),
+            uow=_Uow(),
+        )
+        logout = LogoutUseCase(
+            refresh_sessions=refresh_repo,
+            refresh_tokens=_RefreshTokens(),
+            clock=_Clock(),
+            uow=_Uow(),
+        )
+        me = GetCurrentUserUseCase(users=users)
+        def _resolver(token: str) -> str:
+            if token == "valid-token":
+                return "id-1"
+            raise AuthError(code=AUTH_TOKEN_INVALID, message="invalid")
+
+        router = create_auth_router(
+            register_use_case=register,
+            login_use_case=login,
+            refresh_use_case=refresh,
+            logout_use_case=logout,
+            current_user_use_case=me,
+            access_token_resolver=_resolver,
+        )
+        register_endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/register"))
+        login_endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/login"))
+        refresh_endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/refresh"))
+        logout_endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/logout"))
+        me_endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/me"))
+        return register_endpoint, login_endpoint, refresh_endpoint, logout_endpoint, me_endpoint
+
+    def test_refresh_logout_and_me_paths(self) -> None:
+        register_endpoint, login_endpoint, refresh_endpoint, logout_endpoint, me_endpoint = self._endpoints()
+        register_endpoint(type("RegisterRequest", (), {"email": "user@example.com", "password": "supersecret"})())
+
+        login_response = Response()
+        login_payload = login_endpoint(
+            type("LoginRequest", (), {"email": "user@example.com", "password": "supersecret"})(),
+            login_response,
+        )
+        self.assertIn("access_token", login_payload)
+        cookie_header = login_response.headers.get("set-cookie", "")
+        self.assertIn("refresh_token=", cookie_header)
+        refresh_cookie_value = cookie_header.split("refresh_token=", 1)[1].split(";", 1)[0]
+
+        no_cookie = refresh_endpoint(Response(), None)
+        self.assertEqual(no_cookie.status_code, 401)
+
+        refresh_response = Response()
+        refresh = refresh_endpoint(refresh_response, refresh_cookie_value)
+        self.assertIn("access_token", refresh)
+        cookie_header = refresh_response.headers.get("set-cookie", "").lower()
+        self.assertIn("httponly", cookie_header)
+        self.assertIn("secure", cookie_header)
+        self.assertIn("samesite=strict", cookie_header)
+
+        logout_response = Response()
+        logout = logout_endpoint(logout_response, refresh_cookie_value)
+        self.assertEqual(logout.status_code, 204)
+        logout_cookie_header = logout.headers.get("set-cookie", "").lower()
+        self.assertIn("refresh_token=\"\"", logout_cookie_header)
+        self.assertIn("max-age=0", logout_cookie_header)
+        self.assertIn("httponly", logout_cookie_header)
+        self.assertIn("secure", logout_cookie_header)
+        self.assertIn("samesite=strict", logout_cookie_header)
+        self.assertIn("path=/auth", logout_cookie_header)
+
+        me_missing = me_endpoint(None)
+        self.assertEqual(me_missing.status_code, 401)
+
+        me_invalid = me_endpoint("Bearer wrong-token")
+        self.assertEqual(me_invalid.status_code, 401)
+
+        me_ok = me_endpoint("Bearer valid-token")
+        self.assertEqual(me_ok["user"]["email"], "user@example.com")
+
+
+if __name__ == "__main__":
+    unittest.main()
