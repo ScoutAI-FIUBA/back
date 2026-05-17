@@ -50,6 +50,7 @@ class _UserRepo:
 class _RefreshRepo:
     def __init__(self) -> None:
         self.sessions: list[RefreshSession] = []
+        self.fail_rotate = False
 
     def create(self, session: RefreshSession) -> RefreshSession:
         self.sessions.append(session)
@@ -73,7 +74,15 @@ class _RefreshRepo:
                 self.sessions[idx] = RefreshSession(**{**session.__dict__, "revoked_at": revoked_at})
                 return
 
-    def rotate(self, *, old_session_id: str, new_session: RefreshSession, revoked_at: datetime) -> RefreshSession:
+    def rotate(
+        self,
+        *,
+        old_session_id: str,
+        new_session: RefreshSession,
+        revoked_at: datetime,
+    ) -> RefreshSession | None:
+        if self.fail_rotate:
+            return None
         self.revoke(old_session_id, revoked_at)
         self.sessions.append(new_session)
         return new_session
@@ -229,6 +238,37 @@ class TestRefreshLogoutMeUseCases(unittest.TestCase):
         self.assertIsNotNone(sibling)
         assert sibling is not None
         self.assertIsNotNone(sibling.revoked_at)
+
+    def test_refresh_concurrent_rotation_returns_reuse_error(self) -> None:
+        users = _UserRepo()
+        users.create(User(id="u1", email_normalized="u@example.com", password_hash="h"))
+        refresh_repo = _RefreshRepo()
+        refresh_repo.fail_rotate = True
+        refresh_repo.create(
+            RefreshSession(
+                id="s1",
+                user_id="u1",
+                token_hash="hash::old-refresh",
+                token_jti="jti-old",
+                family_id="fam-1",
+                issued_at=_Clock().now(),
+                expires_at=datetime(2026, 1, 2, tzinfo=timezone.utc),
+            )
+        )
+        use_case = RefreshSessionUseCase(
+            users=users,
+            refresh_sessions=refresh_repo,
+            token_issuer=_TokenIssuer(),
+            refresh_tokens=_RefreshTokens(),
+            clock=_Clock(),
+            ids=_Ids(),
+            uow=_Uow(),
+        )
+
+        with self.assertRaises(AuthError) as ctx:
+            use_case.execute(RefreshSessionCommand(refresh_token="old-refresh"))
+        self.assertEqual(ctx.exception.code, AUTH_REFRESH_REUSED)
+        self.assertEqual(len(refresh_repo.sessions), 1)
 
     def test_logout_idempotent(self) -> None:
         refresh_repo = _RefreshRepo()

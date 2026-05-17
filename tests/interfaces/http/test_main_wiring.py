@@ -4,6 +4,8 @@ import os
 import unittest
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
 from src.interfaces.http.main import create_app
 
 
@@ -53,6 +55,25 @@ class TestMainWiring(unittest.TestCase):
         with patch.dict(os.environ, env, clear=True):
             with self.assertRaisesRegex(RuntimeError, "Missing required environment variable: AUTH_JWT_SECRET"):
                 create_app()
+
+    def test_auth_validation_errors_use_auth_error_envelope(self) -> None:
+        env = {
+            "AUTH_JWT_SECRET": "secret",
+            "AUTH_REFRESH_SECRET": "refresh",
+            "AUTH_JWT_ISSUER": "scoutai",
+            "AUTH_JWT_AUDIENCE": "scoutai-client",
+            "DATABASE_URL": "postgresql://test",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            app = create_app()
+
+        with TestClient(app) as client:
+            invalid = client.post("/auth/register", json={"email": "x", "password": "short"})
+
+        self.assertEqual(invalid.status_code, 400)
+        body = invalid.json()
+        self.assertEqual(body["error"]["code"], "AUTH_VALIDATION_ERROR")
+        self.assertIn("errors", body["error"]["details"])
 
 
 if __name__ == "__main__":

@@ -164,7 +164,13 @@ class PostgresRefreshSessionRepository:
                 {"id": session_id, "revoked_at": revoked_at},
             )
 
-    def rotate(self, *, old_session_id: str, new_session: RefreshSession, revoked_at: datetime) -> RefreshSession:
+    def rotate(
+        self,
+        *,
+        old_session_id: str,
+        new_session: RefreshSession,
+        revoked_at: datetime,
+    ) -> RefreshSession | None:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -174,6 +180,8 @@ class PostgresRefreshSessionRepository:
                 """,
                 {"id": old_session_id, "revoked_at": revoked_at, "next_id": new_session.id},
             )
+            if cur.rowcount != 1:
+                return None
             cur.execute(
                 """
                 INSERT INTO auth_refresh_sessions (

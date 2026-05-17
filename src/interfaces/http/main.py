@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 import os
 import uuid
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 import psycopg
 
+from src.application.auth.errors import AUTH_VALIDATION_ERROR, AuthError, auth_error_http_status
 from src.application.auth.ports import ClockPort, IdGeneratorPort, UnitOfWorkPort
 from src.application.auth.use_cases import (
     DeleteCurrentUserUseCase,
@@ -31,21 +36,41 @@ from src.infrastructure.health_adapter import InMemoryHealthAdapter
 from src.interfaces.http.auth_router import create_auth_router
 
 
-class _LazyConnection:
+class _OperationConnection:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._connection: psycopg.Connection | None = None
+        self._current_connection: ContextVar[psycopg.Connection | None] = ContextVar(
+            "auth_db_connection",
+            default=None,
+        )
 
-    def _get(self) -> psycopg.Connection:
-        if self._connection is None or self._connection.closed:
-            self._connection = psycopg.connect(self._dsn)
-        return self._connection
-
+    @contextmanager
     def cursor(self, *args, **kwargs):
-        return self._get().cursor(*args, **kwargs)
+        current = self._current_connection.get()
+        if current is not None and not current.closed:
+            with current.cursor(*args, **kwargs) as cursor:
+                yield cursor
+            return
 
+        with psycopg.connect(self._dsn) as connection:
+            with connection.cursor(*args, **kwargs) as cursor:
+                yield cursor
+
+    @contextmanager
     def transaction(self):
-        return self._get().transaction()
+        current = self._current_connection.get()
+        if current is not None and not current.closed:
+            with current.transaction():
+                yield
+            return
+
+        with psycopg.connect(self._dsn) as connection:
+            token = self._current_connection.set(connection)
+            try:
+                with connection.transaction():
+                    yield
+            finally:
+                self._current_connection.reset(token)
 
 
 class _SystemClock(ClockPort):
@@ -65,7 +90,7 @@ class _UUIDIds(IdGeneratorPort):
 
 
 class _PsycopgUnitOfWork(UnitOfWorkPort):
-    def __init__(self, connection: _LazyConnection) -> None:
+    def __init__(self, connection: _OperationConnection) -> None:
         self._connection = connection
 
     @contextmanager
@@ -90,7 +115,7 @@ def create_app() -> FastAPI:
     jwt_audience = _require_env("AUTH_JWT_AUDIENCE")
     database_url = _require_env("DATABASE_URL")
 
-    conn = _LazyConnection(database_url)
+    conn = _OperationConnection(database_url)
     users_repo = PostgresUserRepository(connection=conn)
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)
     password_hasher = Argon2PasswordHasher()
@@ -112,6 +137,7 @@ def create_app() -> FastAPI:
                 password_hasher=password_hasher,
                 clock=clock,
                 ids=ids,
+                uow=uow,
             ),
             login_use_case=LoginUseCase(
                 users=users_repo,
@@ -155,6 +181,20 @@ def create_app() -> FastAPI:
         clock=clock,
         uow=uow,
     )
+
+    @app.exception_handler(RequestValidationError)
+    async def handle_request_validation_error(request: Request, exc: RequestValidationError):
+        if request.url.path.startswith("/auth"):
+            auth_error = AuthError(
+                code=AUTH_VALIDATION_ERROR,
+                message="Invalid auth payload",
+                details={"errors": exc.errors()},
+            )
+            return JSONResponse(
+                status_code=auth_error_http_status(auth_error.code),
+                content=auth_error.to_envelope(),
+            )
+        return await request_validation_exception_handler(request, exc)
 
     @app.get("/health")
     def health() -> dict[str, str]:

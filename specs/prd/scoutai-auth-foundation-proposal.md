@@ -9,7 +9,7 @@ Unificar SCOUTAI-29, SCOUTAI-30 y SCOUTAI-31 en un cambio consistente para estab
 ## Decisiones cerradas
 
 1. `email_verified` se incluye ahora con default `false`.
-2. `deleted_at` (soft delete) queda fuera de esta fase.
+2. `deleted_at` (soft delete) se incluye en esta fase para desactivar cuentas y bloquear login/refresh.
 3. `role` simple con default `user` (sin RBAC completo todavía).
 4. `auth_provider_id` nullable reservado para futura federación.
 5. Base de datos inicial: PostgreSQL.
@@ -39,7 +39,6 @@ Unificar SCOUTAI-29, SCOUTAI-30 y SCOUTAI-31 en un cambio consistente para estab
 
 - Verificación de email completa (flujo de envío/confirmación).
 - RBAC granular.
-- Soft delete.
 - MFA/SSO.
 
 ## Contratos de alto nivel

@@ -54,7 +54,7 @@ class RefreshSessionRepositoryPort(ABC):
         old_session_id: str,
         new_session: RefreshSession,
         revoked_at: datetime,
-    ) -> RefreshSession:
+    ) -> RefreshSession | None:
         raise NotImplementedError
 
     @abstractmethod

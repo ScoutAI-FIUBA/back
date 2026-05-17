@@ -155,7 +155,7 @@ class TestAuthSessionEndpoints(unittest.TestCase):
     def _endpoints(self):
         users = _UserRepo()
         refresh_repo = _RefreshRepo()
-        register = RegisterUserUseCase(users=users, password_hasher=_Hasher(), clock=_Clock(), ids=_Ids())
+        register = RegisterUserUseCase(users=users, password_hasher=_Hasher(), clock=_Clock(), ids=_Ids(), uow=_Uow())
         login = LoginUseCase(
             users=users,
             refresh_sessions=refresh_repo,

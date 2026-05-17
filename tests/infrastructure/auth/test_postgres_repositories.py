@@ -25,7 +25,10 @@ class _Cursor:
     def execute(self, query, params=None):
         self._connection.executed.append((" ".join(query.split()), params))
         self._row = self._connection.next_row
-        self.rowcount = self._connection.next_rowcount
+        if self._connection.next_rowcounts:
+            self.rowcount = self._connection.next_rowcounts.pop(0)
+        else:
+            self.rowcount = self._connection.next_rowcount
 
     def fetchone(self):
         return self._row
@@ -36,6 +39,7 @@ class _Connection:
         self.executed = []
         self.next_row = None
         self.next_rowcount = 0
+        self.next_rowcounts: list[int] | None = None
 
     def cursor(self, *args, **kwargs):
         return _Cursor(self)
@@ -104,6 +108,26 @@ class TestPostgresRepositories(unittest.TestCase):
         self.assertEqual(len(conn.executed), 2)
         self.assertIn("UPDATE auth_refresh_sessions", conn.executed[0][0])
         self.assertIn("INSERT INTO auth_refresh_sessions", conn.executed[1][0])
+
+    def test_refresh_rotate_skips_insert_when_old_session_not_revoked(self) -> None:
+        conn = _Connection()
+        conn.next_rowcounts = [0]
+        repo = PostgresRefreshSessionRepository(connection=conn)
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        new_session = RefreshSession(
+            id="s2",
+            user_id="u1",
+            token_hash="hash-new",
+            token_jti="j2",
+            family_id="f1",
+            issued_at=now,
+            expires_at=now,
+        )
+
+        created = repo.rotate(old_session_id="s1", new_session=new_session, revoked_at=now)
+        self.assertIsNone(created)
+        self.assertEqual(len(conn.executed), 1)
+        self.assertIn("UPDATE auth_refresh_sessions", conn.executed[0][0])
 
     def test_revoke_family_returns_affected_rows(self) -> None:
         conn = _Connection()

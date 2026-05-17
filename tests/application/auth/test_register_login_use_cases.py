@@ -69,7 +69,13 @@ class _RefreshRepo:
                 self.sessions[idx] = RefreshSession(**{**session.__dict__, "revoked_at": revoked_at})
                 return
 
-    def rotate(self, *, old_session_id: str, new_session: RefreshSession, revoked_at: datetime) -> RefreshSession:
+    def rotate(
+        self,
+        *,
+        old_session_id: str,
+        new_session: RefreshSession,
+        revoked_at: datetime,
+    ) -> RefreshSession | None:
         self.revoke(old_session_id, revoked_at)
         self.sessions.append(new_session)
         return new_session
@@ -145,15 +151,20 @@ class _Ids:
 
 
 class _Uow:
+    def __init__(self) -> None:
+        self.entered = 0
+
     @contextmanager
     def transaction(self):
+        self.entered += 1
         yield
 
 
 class TestRegisterLoginUseCases(unittest.TestCase):
     def test_register_success_and_no_plaintext_storage(self) -> None:
         users = _UserRepo()
-        use_case = RegisterUserUseCase(users=users, password_hasher=_Hasher(), clock=_Clock(), ids=_Ids())
+        uow = _Uow()
+        use_case = RegisterUserUseCase(users=users, password_hasher=_Hasher(), clock=_Clock(), ids=_Ids(), uow=uow)
 
         identity = use_case.execute(RegisterUserCommand(email="  USER@example.com ", password="supersecret"))
 
@@ -165,12 +176,13 @@ class TestRegisterLoginUseCases(unittest.TestCase):
         assert stored is not None
         self.assertNotEqual(stored.password_hash, "supersecret")
         self.assertTrue(stored.password_hash.startswith("hashed::"))
+        self.assertEqual(uow.entered, 1)
 
     def test_register_duplicate_email(self) -> None:
         users = _UserRepo()
         existing = User(id="u1", email_normalized="user@example.com", password_hash="h")
         users.create(existing)
-        use_case = RegisterUserUseCase(users=users, password_hasher=_Hasher(), clock=_Clock(), ids=_Ids())
+        use_case = RegisterUserUseCase(users=users, password_hasher=_Hasher(), clock=_Clock(), ids=_Ids(), uow=_Uow())
 
         with self.assertRaises(AuthError) as ctx:
             use_case.execute(RegisterUserCommand(email="USER@example.com", password="supersecret"))

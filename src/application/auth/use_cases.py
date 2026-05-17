@@ -80,11 +80,13 @@ class RegisterUserUseCase:
         password_hasher: PasswordHasherPort,
         clock: ClockPort,
         ids: IdGeneratorPort,
+        uow: UnitOfWorkPort,
     ) -> None:
         self._users = users
         self._password_hasher = password_hasher
         self._clock = clock
         self._ids = ids
+        self._uow = uow
 
     def execute(self, command: RegisterUserCommand) -> AuthIdentity:
         try:
@@ -97,25 +99,26 @@ class RegisterUserUseCase:
                 details={"reason": str(exc)},
             ) from exc
 
-        if self._users.get_by_email(email_normalized) is not None:
-            raise AuthError(
-                code=AUTH_EMAIL_ALREADY_EXISTS,
-                message="Email already registered",
-            )
+        with self._uow.transaction():
+            if self._users.get_by_email(email_normalized) is not None:
+                raise AuthError(
+                    code=AUTH_EMAIL_ALREADY_EXISTS,
+                    message="Email already registered",
+                )
 
-        now = self._clock.now()
-        created = self._users.create(
-            User(
-                id=self._ids.new_id(),
-                email_normalized=email_normalized,
-                password_hash=self._password_hasher.hash(plain_password),
-                email_verified=False,
-                role="user",
-                auth_provider_id=None,
-                created_at=now,
-                updated_at=now,
+            now = self._clock.now()
+            created = self._users.create(
+                User(
+                    id=self._ids.new_id(),
+                    email_normalized=email_normalized,
+                    password_hash=self._password_hasher.hash(plain_password),
+                    email_verified=False,
+                    role="user",
+                    auth_provider_id=None,
+                    created_at=now,
+                    updated_at=now,
+                )
             )
-        )
         return AuthIdentity(
             user_id=created.id,
             email=created.email_normalized,
@@ -270,11 +273,13 @@ class RefreshSessionUseCase:
         )
 
         with self._uow.transaction():
-            self._refresh_sessions.rotate(
+            rotated = self._refresh_sessions.rotate(
                 old_session_id=session.id,
                 new_session=next_session,
                 revoked_at=now,
             )
+            if rotated is None:
+                raise AuthError(code=AUTH_REFRESH_REUSED, message="Refresh token reuse detected")
 
         return LoginResult(
             user=identity,
