@@ -1,0 +1,54 @@
+{
+  "metadata": {
+    "project": "back",
+    "exported_at": "2026-05-17",
+    "version": "1.0.0",
+    "source": "bootstrap-mock"
+  },
+  "decisions": [
+    {
+      "id": "DEC-001",
+      "title": "Use FastAPI for backend API",
+      "status": "active",
+      "rationale": "FastAPI provides typed request/response models, clear API docs generation, and efficient Python backend development."
+    },
+    {
+      "id": "DEC-002",
+      "title": "Maintain shared Engram export snapshots in ops/engram",
+      "status": "active",
+      "rationale": "Versioned exports keep team decisions visible in-repo and reduce context loss across sessions."
+    }
+  ],
+  "architecture": [
+    {
+      "id": "ARCH-001",
+      "title": "Hexagonal architecture boundaries",
+      "guideline": "Separate domain logic, application services, inbound adapters, and outbound adapters; framework details stay at the edges."
+    }
+  ],
+  "patterns": [
+    {
+      "id": "PAT-001",
+      "title": "Specs folder structure and templates",
+      "guideline": "Use a consistent specs layout with reusable templates for proposal, spec, design, and tasks artifacts."
+    }
+  ],
+  "bugfixes": [],
+  "preferences": [
+    {
+      "id": "PREF-001",
+      "title": "Documentation and comments",
+      "expectation": "Keep documentation and code comments concise, clear, and focused on intent and tradeoffs."
+    },
+    {
+      "id": "PREF-002",
+      "title": "API contracts",
+      "expectation": "Keep API contracts explicit and stable, with typed schemas and predictable request/response behavior."
+    },
+    {
+      "id": "PREF-003",
+      "title": "Shared export policy",
+      "expectation": "Export only non-sensitive, practical decision context in readable JSON snapshots under ops/engram."
+    }
+  ]
+}
