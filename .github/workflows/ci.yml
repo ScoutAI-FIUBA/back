@@ -13,6 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     env:
       PYTHONPATH: .
+      DATABASE_URL: postgresql://postgres:test-only-password@localhost:5432/scoutai
+      AUTH_JWT_SECRET: test-only-jwt-secret
+      AUTH_REFRESH_SECRET: test-only-refresh-secret
+      AUTH_JWT_ISSUER: scoutai-ci
+      AUTH_JWT_AUDIENCE: scoutai-client
 
     steps:
       - name: Checkout
