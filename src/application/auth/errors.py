@@ -15,7 +15,7 @@ AUTH_VALIDATION_ERROR = "AUTH_VALIDATION_ERROR"
 AUTH_INTERNAL = "AUTH_INTERNAL"
 
 
-@dataclass(frozen=True)
+@dataclass
 class AuthError(Exception):
     code: str
     message: str

@@ -77,6 +77,7 @@ class TestPostgresRepositories(unittest.TestCase):
 
     def test_refresh_rotate_executes_update_then_insert(self) -> None:
         conn = _Connection()
+        conn.next_rowcounts = [1, 1]
         repo = PostgresRefreshSessionRepository(connection=conn)
         now = datetime(2026, 1, 1, tzinfo=timezone.utc)
         new_session = RefreshSession(
