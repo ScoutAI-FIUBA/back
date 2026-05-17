@@ -34,6 +34,18 @@ class TestJWTAccessTokenResolver(unittest.TestCase):
         with self.assertRaises(AuthError):
             resolver.resolve_subject("a.b.c")
 
+    def test_resolve_subject_rejects_malformed_base64_segments(self) -> None:
+        resolver = JWTAccessTokenResolver(
+            secret="test-secret",
+            issuer="scoutai",
+            audience="scoutai-client",
+        )
+
+        with self.assertRaises(AuthError) as ctx:
+            resolver.resolve_subject("a.b.a")
+
+        self.assertEqual(ctx.exception.code, "AUTH_TOKEN_INVALID")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
@@ -31,6 +32,8 @@ class JWTAccessTokenResolver:
 
             payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
         except ValueError as exc:
+            raise AuthError(code=AUTH_TOKEN_INVALID, message="Malformed token") from exc
+        except binascii.Error as exc:
             raise AuthError(code=AUTH_TOKEN_INVALID, message="Malformed token") from exc
         except json.JSONDecodeError as exc:
             raise AuthError(code=AUTH_TOKEN_INVALID, message="Malformed token payload") from exc
