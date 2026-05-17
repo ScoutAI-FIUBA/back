@@ -34,7 +34,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run unit tests
-        run: pytest -q -m "not integration" tests
+        run: pytest -m "not integration" tests
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -80,4 +80,4 @@ jobs:
         run: python scripts/apply_migrations.py
 
       - name: Run integration tests
-        run: pytest -q -m integration tests/integration
+        run: pytest -m integration tests/integration
