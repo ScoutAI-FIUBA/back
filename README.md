@@ -21,5 +21,5 @@ Minimal backend scaffold with hexagonal boundaries and AI adapter placeholders.
 - `src/interfaces/http/` FastAPI transport layer
 - `src/ai/` AI-oriented ports and adapters
 - `specs/` PRD and product specs
-- `ops/engram/` shared Engram decision snapshots for team visibility
+- `.engram/` shared Engram decision snapshots for team visibility
 - `.opencode/` placeholders for future project-specific skills

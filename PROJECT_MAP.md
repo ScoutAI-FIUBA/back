@@ -12,7 +12,7 @@ This repository is split by responsibility so business rules stay isolated from 
 | `src/interfaces/http/` | FastAPI routing, request/response mapping | API endpoints or HTTP contracts change |
 | `src/ai/` | AI service ports and concrete model adapters | Model provider logic, prompts, or inference adapters change |
 | `specs/` | Documentation workflow (`prd/`, `api/`, `adr/`, `templates/`) | Product requirements, API contracts, or architecture decisions change |
-| `ops/engram/` | Shared Engram decision exports (`engram-export-YYYYMMDD*.json`) | Team needs synced decision snapshots for planning/review |
+| `.engram/` | Shared Engram decision exports (`engram-export-YYYYMMDD*.json`) | Team needs synced decision snapshots for planning/review |
 | `.opencode/` | Project-specific AI skills and conventions | Team adds reusable delivery/quality skills |
 
 ## Common cross-cutting skills
@@ -35,7 +35,7 @@ Apply these across all sections:
 | `src/interfaces/http/` | FastAPI routing, validation, serialization, status-code semantics |
 | `src/ai/` | Prompt boundary design, model abstraction, provider swap-ability |
 | `specs/` | PRD-first planning, frontend-facing API contracts, ADR traceability |
-| `ops/engram/` | Shared decision snapshots, milestone exports, review context |
+| `.engram/` | Shared decision snapshots, milestone exports, review context |
 | `.opencode/` | Team AI workflow rules, quality gates, reusable automations |
 
 ## Practical change flow
