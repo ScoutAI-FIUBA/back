@@ -4,6 +4,8 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Protocol
 
+from psycopg.rows import dict_row
+
 from src.domain.auth.entities import RefreshSession, User
 
 
@@ -57,7 +59,7 @@ class PostgresUserRepository:
         self._connection = connection
 
     def create(self, user: User) -> User:
-        with self._connection.cursor(row_factory=dict) as cur:
+        with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 INSERT INTO users (
@@ -75,7 +77,7 @@ class PostgresUserRepository:
         return _row_to_user(row) or user
 
     def get_by_email(self, email_normalized: str) -> User | None:
-        with self._connection.cursor(row_factory=dict) as cur:
+        with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT * FROM users WHERE email_normalized = %(email_normalized)s",
                 {"email_normalized": email_normalized},
@@ -83,12 +85,12 @@ class PostgresUserRepository:
             return _row_to_user(cur.fetchone())
 
     def get_by_id(self, user_id: str) -> User | None:
-        with self._connection.cursor(row_factory=dict) as cur:
+        with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute("SELECT * FROM users WHERE id = %(id)s", {"id": user_id})
             return _row_to_user(cur.fetchone())
 
     def soft_delete(self, user_id: str, deleted_at: datetime) -> User | None:
-        with self._connection.cursor(row_factory=dict) as cur:
+        with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 UPDATE users
@@ -111,7 +113,7 @@ class PostgresRefreshSessionRepository:
         self._connection = connection
 
     def create(self, session: RefreshSession) -> RefreshSession:
-        with self._connection.cursor(row_factory=dict) as cur:
+        with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 INSERT INTO auth_refresh_sessions (
@@ -131,7 +133,7 @@ class PostgresRefreshSessionRepository:
         return _row_to_refresh_session(row) or session
 
     def get_active_by_token_hash(self, token_hash: str, now: datetime) -> RefreshSession | None:
-        with self._connection.cursor(row_factory=dict) as cur:
+        with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 SELECT * FROM auth_refresh_sessions
@@ -144,7 +146,7 @@ class PostgresRefreshSessionRepository:
             return _row_to_refresh_session(cur.fetchone())
 
     def get_by_token_hash(self, token_hash: str) -> RefreshSession | None:
-        with self._connection.cursor(row_factory=dict) as cur:
+        with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT * FROM auth_refresh_sessions WHERE token_hash = %(token_hash)s",
                 {"token_hash": token_hash},
@@ -163,7 +165,7 @@ class PostgresRefreshSessionRepository:
             )
 
     def rotate(self, *, old_session_id: str, new_session: RefreshSession, revoked_at: datetime) -> RefreshSession:
-        with self._connection.cursor(row_factory=dict) as cur:
+        with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 UPDATE auth_refresh_sessions
