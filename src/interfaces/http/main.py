@@ -9,6 +9,7 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import psycopg
 
@@ -106,8 +107,41 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _parse_cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "*").strip()
+    if raw == "" or raw == "*":
+        return ["*"]
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
+def _configure_cors(app: FastAPI) -> None:
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
+    cors_origins = _parse_cors_origins()
+
+    if app_env == "development":
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        return
+
+    allow_credentials = cors_origins != ["*"]
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=allow_credentials,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="ScoutAI Backend", version="0.1.0")
+
+    _configure_cors(app)
 
     jwt_secret = _require_env("AUTH_JWT_SECRET")
     refresh_secret = _require_env("AUTH_REFRESH_SECRET")
@@ -201,6 +235,20 @@ def create_app() -> FastAPI:
         use_case = GetHealthStatus(InMemoryHealthAdapter())
         status = use_case.execute()
         return {"status": status.status}
+
+    @app.get("/db-health")
+    def db_health() -> dict[str, str]:
+        try:
+            with psycopg.connect(database_url) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    cursor.fetchone()
+            return {"status": "ok"}
+        except Exception as exc:  # noqa: BLE001 - surface concrete failure to caller
+            return JSONResponse(
+                status_code=503,
+                content={"status": "error", "detail": str(exc)},
+            )
 
     return app
 

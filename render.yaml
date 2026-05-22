@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: scoutai-back
+    runtime: docker
+    plan: free
+    region: oregon
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: AUTH_JWT_SECRET
+        generateValue: true
+      - key: AUTH_REFRESH_SECRET
+        generateValue: true
+      - key: AUTH_JWT_ISSUER
+        value: scoutai-prod
+      - key: AUTH_JWT_AUDIENCE
+        value: scoutai-prod-client
+      - key: DB_WAIT_TIMEOUT_SECONDS
+        value: "60"
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: R2_ACCOUNT_ID
+        sync: false
+      - key: R2_ACCESS_KEY_ID
+        sync: false
+      - key: R2_SECRET_ACCESS_KEY
+        sync: false
+      - key: R2_BUCKET_NAME
+        sync: false
+      - key: R2_ENDPOINT_URL
+        sync: false
