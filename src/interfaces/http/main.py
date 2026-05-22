@@ -3,12 +3,14 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
+import logging
 import os
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import psycopg
 
@@ -34,6 +36,25 @@ from src.infrastructure.auth.postgres_repositories import (
 )
 from src.infrastructure.health_adapter import InMemoryHealthAdapter
 from src.interfaces.http.auth_router import create_auth_router
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS = 5
+
+
+def _db_health_connect_timeout_seconds() -> int:
+    raw = os.getenv("DB_HEALTH_CONNECT_TIMEOUT_SECONDS")
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return _DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS
+    if value <= 0:
+        raise RuntimeError(
+            "DB_HEALTH_CONNECT_TIMEOUT_SECONDS must be a positive integer"
+        )
+    return value
 
 
 class _OperationConnection:
@@ -106,14 +127,71 @@ def _require_env(name: str) -> str:
     return value
 
 
+def _parse_cors_origins() -> list[str]:
+    raw = os.getenv("CORS_ORIGINS", "").strip()
+    if raw == "":
+        return []
+    if raw == "*":
+        return ["*"]
+
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if "*" in origins:
+        if len(origins) > 1:
+            raise RuntimeError("CORS_ORIGINS cannot mix '*' with explicit origins")
+        return ["*"]
+    return origins
+
+
+def _configure_cors(app: FastAPI) -> None:
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
+
+    if app_env == "development":
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        return
+
+    cors_origins = _parse_cors_origins()
+    if not cors_origins:
+        raise RuntimeError(
+            "Missing required environment variable: CORS_ORIGINS "
+            "(required when APP_ENV is not development)"
+        )
+
+    if cors_origins == ["*"]:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        return
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="ScoutAI Backend", version="0.1.0")
+
+    _configure_cors(app)
 
     jwt_secret = _require_env("AUTH_JWT_SECRET")
     refresh_secret = _require_env("AUTH_REFRESH_SECRET")
     jwt_issuer = _require_env("AUTH_JWT_ISSUER")
     jwt_audience = _require_env("AUTH_JWT_AUDIENCE")
     database_url = _require_env("DATABASE_URL")
+    db_health_connect_timeout = _db_health_connect_timeout_seconds()
 
     conn = _OperationConnection(database_url)
     users_repo = PostgresUserRepository(connection=conn)
@@ -201,6 +279,24 @@ def create_app() -> FastAPI:
         use_case = GetHealthStatus(InMemoryHealthAdapter())
         status = use_case.execute()
         return {"status": status.status}
+
+    @app.get("/db-health")
+    def db_health() -> dict[str, str]:
+        try:
+            with psycopg.connect(
+                database_url,
+                connect_timeout=db_health_connect_timeout,
+            ) as connection:
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT 1")
+                    cursor.fetchone()
+            return {"status": "ok"}
+        except Exception as exc:
+            logger.warning(
+                "Database health check failed (%s)",
+                type(exc).__name__,
+            )
+            raise HTTPException(status_code=503, detail="Database unavailable")
 
     return app
 
