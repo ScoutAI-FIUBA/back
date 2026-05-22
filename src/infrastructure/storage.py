@@ -37,10 +37,10 @@ class R2Settings:
         if any(value is None or value.strip() == "" for value in required.values()):
             return None
         return cls(
-            access_key_id=required["R2_ACCESS_KEY_ID"],
-            secret_access_key=required["R2_SECRET_ACCESS_KEY"],
-            bucket_name=required["R2_BUCKET_NAME"],
-            endpoint_url=required["R2_ENDPOINT_URL"],
+            access_key_id=required["R2_ACCESS_KEY_ID"].strip(),
+            secret_access_key=required["R2_SECRET_ACCESS_KEY"].strip(),
+            bucket_name=required["R2_BUCKET_NAME"].strip(),
+            endpoint_url=required["R2_ENDPOINT_URL"].strip(),
         )
 
 

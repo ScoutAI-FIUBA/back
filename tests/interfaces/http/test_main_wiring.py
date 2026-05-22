@@ -128,6 +128,22 @@ class TestMainWiring(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "CORS_ORIGINS"):
                 create_app()
 
+    def test_create_app_falls_back_when_db_health_timeout_is_invalid(self) -> None:
+        env = {
+            "DB_HEALTH_CONNECT_TIMEOUT_SECONDS": "not-a-number",
+            "AUTH_JWT_SECRET": "secret",
+            "AUTH_REFRESH_SECRET": "refresh",
+            "AUTH_JWT_ISSUER": "scoutai",
+            "AUTH_JWT_AUDIENCE": "scoutai-client",
+            "DATABASE_URL": "postgresql://test",
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("src.interfaces.http.main.psycopg.connect", return_value=_FakeConnection()):
+                app = create_app()
+
+        self.assertIsNotNone(app)
+
     def test_create_app_rejects_mixed_wildcard_cors_origins(self) -> None:
         env = {
             "APP_ENV": "production",

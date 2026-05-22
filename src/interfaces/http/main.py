@@ -39,9 +39,22 @@ from src.interfaces.http.auth_router import create_auth_router
 
 logger = logging.getLogger(__name__)
 
-DB_HEALTH_CONNECT_TIMEOUT_SECONDS = int(
-    os.getenv("DB_HEALTH_CONNECT_TIMEOUT_SECONDS", "5"),
-)
+_DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS = 5
+
+
+def _db_health_connect_timeout_seconds() -> int:
+    raw = os.getenv("DB_HEALTH_CONNECT_TIMEOUT_SECONDS")
+    if raw is None or raw.strip() == "":
+        return _DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return _DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS
+    if value <= 0:
+        raise RuntimeError(
+            "DB_HEALTH_CONNECT_TIMEOUT_SECONDS must be a positive integer"
+        )
+    return value
 
 
 class _OperationConnection:
@@ -178,6 +191,7 @@ def create_app() -> FastAPI:
     jwt_issuer = _require_env("AUTH_JWT_ISSUER")
     jwt_audience = _require_env("AUTH_JWT_AUDIENCE")
     database_url = _require_env("DATABASE_URL")
+    db_health_connect_timeout = _db_health_connect_timeout_seconds()
 
     conn = _OperationConnection(database_url)
     users_repo = PostgresUserRepository(connection=conn)
@@ -271,14 +285,17 @@ def create_app() -> FastAPI:
         try:
             with psycopg.connect(
                 database_url,
-                connect_timeout=DB_HEALTH_CONNECT_TIMEOUT_SECONDS,
+                connect_timeout=db_health_connect_timeout,
             ) as connection:
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT 1")
                     cursor.fetchone()
             return {"status": "ok"}
-        except Exception:
-            logger.exception("Database health check failed")
+        except Exception as exc:
+            logger.warning(
+                "Database health check failed (%s)",
+                type(exc).__name__,
+            )
             raise HTTPException(status_code=503, detail="Database unavailable")
 
     return app
