@@ -3,10 +3,11 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
+import logging
 import os
 import uuid
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +36,12 @@ from src.infrastructure.auth.postgres_repositories import (
 )
 from src.infrastructure.health_adapter import InMemoryHealthAdapter
 from src.interfaces.http.auth_router import create_auth_router
+
+logger = logging.getLogger(__name__)
+
+DB_HEALTH_CONNECT_TIMEOUT_SECONDS = int(
+    os.getenv("DB_HEALTH_CONNECT_TIMEOUT_SECONDS", "5"),
+)
 
 
 class _OperationConnection:
@@ -108,15 +115,22 @@ def _require_env(name: str) -> str:
 
 
 def _parse_cors_origins() -> list[str]:
-    raw = os.getenv("CORS_ORIGINS", "*").strip()
-    if raw == "" or raw == "*":
+    raw = os.getenv("CORS_ORIGINS", "").strip()
+    if raw == "":
+        return []
+    if raw == "*":
         return ["*"]
-    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    if "*" in origins:
+        if len(origins) > 1:
+            raise RuntimeError("CORS_ORIGINS cannot mix '*' with explicit origins")
+        return ["*"]
+    return origins
 
 
 def _configure_cors(app: FastAPI) -> None:
     app_env = os.getenv("APP_ENV", "development").strip().lower()
-    cors_origins = _parse_cors_origins()
 
     if app_env == "development":
         app.add_middleware(
@@ -128,11 +142,27 @@ def _configure_cors(app: FastAPI) -> None:
         )
         return
 
-    allow_credentials = cors_origins != ["*"]
+    cors_origins = _parse_cors_origins()
+    if not cors_origins:
+        raise RuntimeError(
+            "Missing required environment variable: CORS_ORIGINS "
+            "(required when APP_ENV is not development)"
+        )
+
+    if cors_origins == ["*"]:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+        return
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_credentials=allow_credentials,
+        allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
@@ -239,16 +269,17 @@ def create_app() -> FastAPI:
     @app.get("/db-health")
     def db_health() -> dict[str, str]:
         try:
-            with psycopg.connect(database_url) as connection:
+            with psycopg.connect(
+                database_url,
+                connect_timeout=DB_HEALTH_CONNECT_TIMEOUT_SECONDS,
+            ) as connection:
                 with connection.cursor() as cursor:
                     cursor.execute("SELECT 1")
                     cursor.fetchone()
             return {"status": "ok"}
-        except Exception as exc:  # noqa: BLE001 - surface concrete failure to caller
-            return JSONResponse(
-                status_code=503,
-                content={"status": "error", "detail": str(exc)},
-            )
+        except Exception:
+            logger.exception("Database health check failed")
+            raise HTTPException(status_code=503, detail="Database unavailable")
 
     return app
 
