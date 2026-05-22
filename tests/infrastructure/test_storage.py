@@ -52,7 +52,8 @@ class TestR2Storage(unittest.TestCase):
         self.assertFalse(storage.is_configured)
 
     def test_require_client_raises_when_not_configured(self) -> None:
-        storage = R2Storage(settings=None)
+        with patch.object(R2Settings, "from_env", return_value=None):
+            storage = R2Storage(settings=None)
         with self.assertRaises(StorageNotConfiguredError):
             storage._require_client()
 

@@ -30,7 +30,7 @@ uvicorn src.interfaces.http.main:app --reload
 ```bash
 pytest -m "not integration" tests
 
-DATABASE_URL=postgresql://postgres:postgres@localhost:5432/scoutai_dev \
+DATABASE_URL=postgresql://postgres:postgres@localhost:5435/scoutai_dev \
   pytest -q -m integration tests/integration
 ```
 
