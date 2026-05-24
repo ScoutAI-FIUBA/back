@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from contextlib import AbstractContextManager
+from src.application.common.ports import IdGeneratorPort, UnitOfWorkPort
 
 from src.domain.players.entities import Player
 
@@ -23,14 +23,3 @@ class PlayerRepositoryPort(ABC):
     def delete(self, player_id: str) -> bool:
         raise NotImplementedError
 
-
-class UnitOfWorkPort(ABC):
-    @abstractmethod
-    def transaction(self) -> AbstractContextManager[None]:
-        raise NotImplementedError
-
-
-class IdGeneratorPort(ABC):
-    @abstractmethod
-    def new_id(self) -> str:
-        raise NotImplementedError

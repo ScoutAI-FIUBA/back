@@ -59,11 +59,17 @@ class TestPlayersRouter(unittest.TestCase):
             update_player_use_case=UpdatePlayerUseCase(players=repo, uow=_Uow()),
             delete_player_use_case=DeletePlayerUseCase(players=repo, uow=_Uow()),
         )
-        create_endpoint = next(route.endpoint for route in router.routes if route.path == "/players")
+        create_endpoint = next(
+            route.endpoint for route in router.routes if route.path == "/players" and "POST" in route.methods
+        )
         list_endpoint = next(
             route.endpoint for route in router.routes if route.path == "/players" and "GET" in route.methods
         )
-        update_endpoint = next(route.endpoint for route in router.routes if route.path == "/players/{player_id}")
+        update_endpoint = next(
+            route.endpoint
+            for route in router.routes
+            if route.path == "/players/{player_id}" and "PUT" in route.methods
+        )
         delete_endpoint = next(
             route.endpoint
             for route in router.routes

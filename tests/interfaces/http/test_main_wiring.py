@@ -28,7 +28,7 @@ class _FakeConnection:
 
 
 class TestMainWiring(unittest.TestCase):
-    def test_create_app_registers_health_and_auth_routes(self) -> None:
+    def test_create_app_registers_health_auth_and_players_routes(self) -> None:
         env = {
             "AUTH_JWT_SECRET": "secret",
             "AUTH_REFRESH_SECRET": "refresh",

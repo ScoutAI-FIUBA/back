@@ -13,8 +13,8 @@ from src.application.auth.errors import (
     AuthError,
 )
 from src.application.auth.ports import (
+    AuthIdGeneratorPort,
     ClockPort,
-    IdGeneratorPort,
     PasswordHasherPort,
     RefreshSessionRepositoryPort,
     RefreshTokenServicePort,
@@ -79,7 +79,7 @@ class RegisterUserUseCase:
         users: UserRepositoryPort,
         password_hasher: PasswordHasherPort,
         clock: ClockPort,
-        ids: IdGeneratorPort,
+        ids: AuthIdGeneratorPort,
         uow: UnitOfWorkPort,
     ) -> None:
         self._users = users
@@ -137,7 +137,7 @@ class LoginUseCase:
         token_issuer: TokenIssuerPort,
         refresh_tokens: RefreshTokenServicePort,
         clock: ClockPort,
-        ids: IdGeneratorPort,
+        ids: AuthIdGeneratorPort,
         uow: UnitOfWorkPort,
         access_token_ttl_seconds: int = ACCESS_TOKEN_TTL_SECONDS,
         refresh_token_ttl_seconds: int = REFRESH_TOKEN_TTL_SECONDS,
@@ -216,7 +216,7 @@ class RefreshSessionUseCase:
         token_issuer: TokenIssuerPort,
         refresh_tokens: RefreshTokenServicePort,
         clock: ClockPort,
-        ids: IdGeneratorPort,
+        ids: AuthIdGeneratorPort,
         uow: UnitOfWorkPort,
         access_token_ttl_seconds: int = ACCESS_TOKEN_TTL_SECONDS,
         refresh_token_ttl_seconds: int = REFRESH_TOKEN_TTL_SECONDS,

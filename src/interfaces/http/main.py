@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 import psycopg
 
 from src.application.auth.errors import AUTH_VALIDATION_ERROR, AuthError, auth_error_http_status
-from src.application.auth.ports import ClockPort, IdGeneratorPort, UnitOfWorkPort
+from src.application.auth.ports import AuthIdGeneratorPort, ClockPort, UnitOfWorkPort
 from src.application.auth.use_cases import (
     DeleteCurrentUserUseCase,
     GetCurrentUserUseCase,
@@ -107,7 +107,7 @@ class _SystemClock(ClockPort):
         return datetime.now(timezone.utc)
 
 
-class _UUIDIds(IdGeneratorPort):
+class _UUIDIds(AuthIdGeneratorPort):
     def new_id(self) -> str:
         return str(uuid.uuid4())
 

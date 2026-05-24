@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from contextlib import AbstractContextManager
 from datetime import datetime
 
+from src.application.common.ports import IdGeneratorPort, UnitOfWorkPort
 from src.domain.auth.entities import RefreshSession, User
 from src.domain.auth.value_objects import AuthIdentity
 
@@ -106,21 +106,11 @@ class ClockPort(ABC):
         raise NotImplementedError
 
 
-class IdGeneratorPort(ABC):
-    @abstractmethod
-    def new_id(self) -> str:
-        raise NotImplementedError
-
+class AuthIdGeneratorPort(IdGeneratorPort, ABC):
     @abstractmethod
     def new_jti(self) -> str:
         raise NotImplementedError
 
     @abstractmethod
     def new_family_id(self) -> str:
-        raise NotImplementedError
-
-
-class UnitOfWorkPort(ABC):
-    @abstractmethod
-    def transaction(self) -> AbstractContextManager[None]:
         raise NotImplementedError
