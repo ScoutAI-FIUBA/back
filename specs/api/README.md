@@ -4,4 +4,7 @@ Store endpoint documentation here for frontend consumers.
 
 Use: `<domain>-<action>-endpoint.md`
 
-Current auth contract: `specs/api/auth.md`.
+## Contracts index
+
+- Auth API: `specs/api/auth.md`
+- Players API: `specs/api/players.md`
