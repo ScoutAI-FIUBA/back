@@ -35,7 +35,15 @@ from src.infrastructure.auth.postgres_repositories import (
     PostgresUserRepository,
 )
 from src.infrastructure.health_adapter import InMemoryHealthAdapter
+from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
 from src.interfaces.http.auth_router import create_auth_router
+from src.interfaces.http.players_router import create_players_router
+from src.application.players.use_cases import (
+    CreatePlayerUseCase,
+    DeletePlayerUseCase,
+    ListPlayersUseCase,
+    UpdatePlayerUseCase,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +204,7 @@ def create_app() -> FastAPI:
     conn = _OperationConnection(database_url)
     users_repo = PostgresUserRepository(connection=conn)
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)
+    players_repo = PostgresPlayerRepository(connection=conn)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
     refresh_tokens = OpaqueRefreshTokenService(secret=refresh_secret)
@@ -250,6 +259,15 @@ def create_app() -> FastAPI:
                 uow=uow,
             ),
             access_token_resolver=access_token_resolver.resolve_subject,
+        )
+    )
+
+    app.include_router(
+        create_players_router(
+            create_player_use_case=CreatePlayerUseCase(players=players_repo, ids=ids, uow=uow),
+            list_players_use_case=ListPlayersUseCase(players=players_repo),
+            update_player_use_case=UpdatePlayerUseCase(players=players_repo, uow=uow),
+            delete_player_use_case=DeletePlayerUseCase(players=players_repo, uow=uow),
         )
     )
 
