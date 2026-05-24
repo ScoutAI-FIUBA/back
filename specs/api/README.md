@@ -5,3 +5,5 @@ Store endpoint documentation here for frontend consumers.
 Use: `<domain>-<action>-endpoint.md`
 
 Current auth contract: `specs/api/auth.md`.
+
+Current team contract: `specs/api/teams.md`.
