@@ -78,6 +78,24 @@ Team CRUD integration coverage lives in `tests/integration/test_team_crud_integr
 
 Production config lives in `render.yaml` and `.env.example`. Set env vars in the Render dashboard before deploying.
 
+## API endpoint inventory
+
+- Health
+  - `GET /health`
+  - `GET /db-health`
+- Auth (`specs/api/auth.md`)
+  - `POST /auth/register`
+  - `POST /auth/login`
+  - `POST /auth/refresh`
+  - `POST /auth/logout`
+  - `GET /auth/me`
+  - `DELETE /auth/me`
+- Players (`specs/api/players.md`)
+  - `POST /players`
+  - `GET /players`
+  - `PUT /players/{player_id}`
+  - `DELETE /players/{player_id}`
+
 ## Structure
 
 - `src/domain/` — core business models and rules

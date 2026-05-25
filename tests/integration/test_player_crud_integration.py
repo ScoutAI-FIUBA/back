@@ -1,0 +1,151 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi.testclient import TestClient
+import psycopg
+import pytest
+
+
+pytestmark = pytest.mark.integration
+
+
+def _required_env() -> dict[str, str]:
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        pytest.fail("DATABASE_URL is required for integration tests")
+
+    return {
+        "DATABASE_URL": database_url,
+        "AUTH_JWT_SECRET": "integration-jwt-secret",
+        "AUTH_REFRESH_SECRET": "integration-refresh-secret",
+        "AUTH_JWT_ISSUER": "scoutai-integration",
+        "AUTH_JWT_AUDIENCE": "scoutai-integration-client",
+    }
+
+
+def _apply_migrations(database_url: str) -> None:
+    migration_dir = Path("src/infrastructure/auth/migrations")
+    migration_files = sorted(migration_dir.glob("*.sql"))
+
+    with psycopg.connect(database_url) as conn:
+        with conn.cursor() as cur:
+            for migration_file in migration_files:
+                sql = migration_file.read_text(encoding="utf-8")
+                cur.execute(sql)
+        conn.commit()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _integration_schema_ready() -> None:
+    env = _required_env()
+    _apply_migrations(env["DATABASE_URL"])
+
+
+@pytest.fixture(autouse=True)
+def _players_table_clean() -> None:
+    env = _required_env()
+    with psycopg.connect(env["DATABASE_URL"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE players")
+        conn.commit()
+
+
+@pytest.fixture
+def client() -> TestClient:
+    from src.interfaces.http.main import create_app
+
+    env = _required_env()
+    previous = {key: os.environ.get(key) for key in env}
+    os.environ.update(env)
+    app = create_app()
+    with TestClient(app) as test_client:
+        yield test_client
+    for key, value in previous.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
+
+
+def _payload() -> dict[str, object]:
+    return {
+        "first_name": "Lionel",
+        "last_name": f"Messi-{uuid4().hex[:8]}",
+        "birth_date": "1987-06-24",
+        "height_cm": 170,
+        "weight_kg": 72,
+        "primary_position": "RW",
+    }
+
+
+def test_player_crud_happy_path(client: TestClient) -> None:
+    created = client.post("/players", json=_payload())
+    assert created.status_code == 201
+    player = created.json()["player"]
+    player_id = player["id"]
+
+    listed = client.get("/players")
+    assert listed.status_code == 200
+    assert len(listed.json()["players"]) == 1
+    assert listed.json()["players"][0]["id"] == player_id
+
+    updated = client.put(
+        f"/players/{player_id}",
+        json={
+            "first_name": "Leo",
+            "last_name": player["last_name"],
+            "birth_date": "1987-06-24",
+            "height_cm": 171,
+            "weight_kg": 73,
+            "primary_position": "AM",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["player"]["first_name"] == "Leo"
+    assert updated.json()["player"]["height_cm"] == 171
+
+    deleted = client.delete(f"/players/{player_id}")
+    assert deleted.status_code == 204
+
+    listed_after_delete = client.get("/players")
+    assert listed_after_delete.status_code == 200
+    assert listed_after_delete.json()["players"] == []
+
+
+def test_player_update_and_delete_return_404_when_player_missing(client: TestClient) -> None:
+    missing_id = str(uuid4())
+    update_missing = client.put(
+        f"/players/{missing_id}",
+        json={
+            "first_name": "A",
+            "last_name": "B",
+            "birth_date": "1990-01-01",
+            "height_cm": 180,
+            "weight_kg": 75,
+            "primary_position": "CB",
+        },
+    )
+    assert update_missing.status_code == 404
+    assert update_missing.json()["error"]["code"] == "PLAYER_NOT_FOUND"
+
+    delete_missing = client.delete(f"/players/{missing_id}")
+    assert delete_missing.status_code == 404
+    assert delete_missing.json()["error"]["code"] == "PLAYER_NOT_FOUND"
+
+
+def test_player_request_validation_contract(client: TestClient) -> None:
+    invalid = client.post(
+        "/players",
+        json={
+            "first_name": "",
+            "last_name": "",
+            "birth_date": "not-a-date",
+            "height_cm": -1,
+            "weight_kg": 0,
+            "primary_position": "",
+        },
+    )
+    assert invalid.status_code == 422

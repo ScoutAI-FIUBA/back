@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 import psycopg
 
 from src.application.auth.errors import AUTH_VALIDATION_ERROR, AuthError, auth_error_http_status
-from src.application.auth.ports import ClockPort, IdGeneratorPort, UnitOfWorkPort
+from src.application.auth.ports import AuthIdGeneratorPort, ClockPort, UnitOfWorkPort
 from src.application.auth.use_cases import (
     DeleteCurrentUserUseCase,
     GetCurrentUserUseCase,
@@ -41,8 +41,16 @@ from src.infrastructure.auth.postgres_repositories import (
     PostgresUserRepository,
 )
 from src.infrastructure.health_adapter import InMemoryHealthAdapter
-from src.infrastructure.team.postgres_repository import PostgresTeamRepository
+from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
 from src.interfaces.http.auth_router import create_auth_router
+from src.interfaces.http.players_router import create_players_router
+from src.application.players.use_cases import (
+    CreatePlayerUseCase,
+    DeletePlayerUseCase,
+    ListPlayersUseCase,
+    UpdatePlayerUseCase,
+)
+from src.infrastructure.team.postgres_repository import PostgresTeamRepository
 from src.interfaces.http.team_router import create_team_router
 
 logger = logging.getLogger(__name__)
@@ -107,7 +115,7 @@ class _SystemClock(ClockPort):
         return datetime.now(timezone.utc)
 
 
-class _UUIDIds(IdGeneratorPort):
+class _UUIDIds(AuthIdGeneratorPort):
     def new_id(self) -> str:
         return str(uuid.uuid4())
 
@@ -204,6 +212,7 @@ def create_app() -> FastAPI:
     conn = _OperationConnection(database_url)
     users_repo = PostgresUserRepository(connection=conn)
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)
+    players_repo = PostgresPlayerRepository(connection=conn)
     teams_repo = PostgresTeamRepository(connection=conn)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
@@ -267,6 +276,15 @@ def create_app() -> FastAPI:
             list_teams_use_case=ListTeamsUseCase(teams=teams_repo),
             update_team_use_case=UpdateTeamUseCase(teams=teams_repo),
             delete_team_use_case=DeleteTeamUseCase(teams=teams_repo),
+        )
+    )
+
+    app.include_router(
+        create_players_router(
+            create_player_use_case=CreatePlayerUseCase(players=players_repo, ids=ids, uow=uow),
+            list_players_use_case=ListPlayersUseCase(players=players_repo),
+            update_player_use_case=UpdatePlayerUseCase(players=players_repo, uow=uow),
+            delete_player_use_case=DeletePlayerUseCase(players=players_repo, uow=uow),
         )
     )
 
