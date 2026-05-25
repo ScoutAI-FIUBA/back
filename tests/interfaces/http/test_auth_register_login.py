@@ -15,7 +15,7 @@ from src.application.auth.use_cases import (
     RegisterUserUseCase,
 )
 from src.domain.auth.entities import RefreshSession, User
-from src.interfaces.http.auth_router import create_auth_router
+from src.interfaces.http.routes.auth_router import create_auth_router
 
 
 class _UserRepo:

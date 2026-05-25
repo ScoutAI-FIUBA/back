@@ -13,7 +13,7 @@ from src.application.players.use_cases import (
     UpdatePlayerUseCase,
 )
 from src.domain.players.entities import Player
-from src.interfaces.http.players_router import create_players_router
+from src.interfaces.http.routes.players_router import create_players_router
 
 
 class _PlayerRepo:

@@ -38,32 +38,36 @@ Team CRUD integration coverage lives in `tests/integration/test_team_crud_integr
 
 ## API endpoints
 
+Auth policy: all HTTP endpoints require a Bearer access token by default. Current public whitelist (no auth): `/health`, `/db-health`, `/auth/register`, `/auth/login`, `/auth/refresh`.
+
+Note: CORS preflight `OPTIONS` requests are also allowed without auth.
+
 ### Health
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `GET` | `/health` | Service health status. |
-| `GET` | `/db-health` | Database connectivity health check. |
+| Method | Path | Auth required | Purpose |
+| --- | --- | --- | --- |
+| `GET` | `/health` | No | Service health status. |
+| `GET` | `/db-health` | No | Database connectivity health check. |
 
 ### Auth
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/auth/register` | Register a user account. |
-| `POST` | `/auth/login` | Authenticate and issue access token + refresh cookie. |
-| `POST` | `/auth/refresh` | Rotate refresh session and return a new access token. |
-| `POST` | `/auth/logout` | Revoke refresh session and clear refresh cookie. |
-| `GET` | `/auth/me` | Return current authenticated user. |
-| `DELETE` | `/auth/me` | Delete current authenticated user. |
+| Method | Path | Auth required | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/auth/register` | No | Register a new user account. |
+| `POST` | `/auth/login` | No | Authenticate user and issue access token + refresh cookie. |
+| `POST` | `/auth/refresh` | No | Rotate refresh session and return a new access token. |
+| `POST` | `/auth/logout` | Yes | Revoke refresh session (if present) and clear refresh cookie. |
+| `GET` | `/auth/me` | Yes | Return the current authenticated user profile. |
+| `DELETE` | `/auth/me` | Yes | Hard-delete the current authenticated user. |
 
 ### Teams
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/teams` | Create team. |
-| `GET` | `/teams` | List teams. |
-| `PUT` | `/teams/{team_id}` | Update team by UUID. |
-| `DELETE` | `/teams/{team_id}` | Delete team by UUID. |
+| Method | Path | Auth required | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/teams` | Yes | Create a team. |
+| `GET` | `/teams` | Yes | List all teams. |
+| `PUT` | `/teams/{team_id}` | Yes | Update a team by UUID. |
+| `DELETE` | `/teams/{team_id}` | Yes | Delete a team by UUID. |
 
 - Teams contract and examples: `specs/api/teams.md`.
 - Teams persistence: migration `src/infrastructure/team/migrations/001_team_foundation.sql` creates `teams` table with required fields:
@@ -76,13 +80,13 @@ Team CRUD integration coverage lives in `tests/integration/test_team_crud_integr
 
 ### Players
 
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/players` | Create player. |
-| `GET` | `/players` | List players; use `team_id` query param to filter by team. |
-| `PUT` | `/players/{player_id}` | Update player by UUID. |
-| `PUT` | `/players/{player_id}/team/{team_id}` | Associate player with team UUID. |
-| `DELETE` | `/players/{player_id}` | Delete player by UUID. |
+| Method | Path | Auth required | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/players` | Yes | Create a player. |
+| `GET` | `/players` | Yes | List players; optional `team_id` query param filters by team UUID. |
+| `PUT` | `/players/{player_id}` | Yes | Update a player by UUID. |
+| `PUT` | `/players/{player_id}/team/{team_id}` | Yes | Assign a player to a team using UUIDs. |
+| `DELETE` | `/players/{player_id}` | Yes | Delete a player by UUID. |
 
 - Players contract and examples: `specs/api/players.md`.
 - Player-team association persistence: `src/infrastructure/team/migrations/002_player_team_association.sql` adds nullable `players.team_id` foreign key to `teams(id)`.
@@ -90,25 +94,6 @@ Team CRUD integration coverage lives in `tests/integration/test_team_crud_integr
 ## Deploy
 
 Production config lives in `render.yaml` and `.env.example`. Set env vars in the Render dashboard before deploying.
-
-## API endpoint inventory
-
-- Health
-  - `GET /health`
-  - `GET /db-health`
-- Auth (`specs/api/auth.md`)
-  - `POST /auth/register`
-  - `POST /auth/login`
-  - `POST /auth/refresh`
-  - `POST /auth/logout`
-  - `GET /auth/me`
-  - `DELETE /auth/me`
-- Players (`specs/api/players.md`)
-  - `POST /players`
-  - `GET /players`
-  - `PUT /players/{player_id}`
-  - `PUT /players/{player_id}/team/{team_id}`
-  - `DELETE /players/{player_id}`
 
 ## Structure
 

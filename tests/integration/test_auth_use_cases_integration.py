@@ -84,6 +84,14 @@ def _login(client: TestClient, email: str, password: str = "supersecret123"):
     return client.post("/auth/login", json={"email": email, "password": password})
 
 
+def _request_with_refresh_cookie(client: TestClient, method: str, path: str, refresh_token: str, **kwargs):
+    client.cookies.set("refresh_token", refresh_token, path="/auth")
+    try:
+        return getattr(client, method)(path, **kwargs)
+    finally:
+        client.cookies.delete("refresh_token", path="/auth")
+
+
 def test_register_happy_path_and_duplicate_email(client: TestClient) -> None:
     email = f"register-{uuid4().hex}@example.com"
     first = _register(client, email)
@@ -129,7 +137,7 @@ def test_refresh_happy_path_invalid_missing_and_reuse_paths(client: TestClient) 
     refresh_token = login.cookies.get("refresh_token")
     assert refresh_token
 
-    refreshed = client.post("/auth/refresh")
+    refreshed = _request_with_refresh_cookie(client, "post", "/auth/refresh", refresh_token)
     assert refreshed.status_code == 200
     refreshed_token = refreshed.cookies.get("refresh_token")
     assert refreshed_token and refreshed_token != refresh_token
@@ -147,15 +155,15 @@ def test_refresh_happy_path_invalid_missing_and_reuse_paths(client: TestClient) 
     assert no_cookie.status_code == 401
     assert no_cookie.json()["error"]["code"] == "AUTH_UNAUTHORIZED"
 
-    invalid_cookie = client.post("/auth/refresh", cookies={"refresh_token": "not-a-real-token"})
+    invalid_cookie = _request_with_refresh_cookie(client, "post", "/auth/refresh", "not-a-real-token")
     assert invalid_cookie.status_code == 401
     assert invalid_cookie.json()["error"]["code"] == "AUTH_TOKEN_INVALID"
 
-    reused_old = client.post("/auth/refresh", cookies={"refresh_token": refresh_token})
+    reused_old = _request_with_refresh_cookie(client, "post", "/auth/refresh", refresh_token)
     assert reused_old.status_code == 401
     assert reused_old.json()["error"]["code"] == "AUTH_REFRESH_REUSED"
 
-    family_revoked = client.post("/auth/refresh", cookies={"refresh_token": refreshed_token})
+    family_revoked = _request_with_refresh_cookie(client, "post", "/auth/refresh", refreshed_token)
     assert family_revoked.status_code == 401
     assert family_revoked.json()["error"]["code"] == "AUTH_REFRESH_REUSED"
 
@@ -173,7 +181,7 @@ def test_refresh_expired_session_returns_reuse_contract(client: TestClient) -> N
             cur.execute("UPDATE auth_refresh_sessions SET expires_at = NOW() - INTERVAL '1 second'")
         conn.commit()
 
-    expired = client.post("/auth/refresh", cookies={"refresh_token": refresh_token})
+    expired = _request_with_refresh_cookie(client, "post", "/auth/refresh", refresh_token)
     assert expired.status_code == 401
     assert expired.json()["error"]["code"] == "AUTH_REFRESH_REUSED"
     assert expired.json()["error"]["message"] == "Refresh token reuse detected"
@@ -183,10 +191,17 @@ def test_logout_happy_path_clears_cookie_and_revokes_session(client: TestClient)
     email = f"logout-{uuid4().hex}@example.com"
     _register(client, email)
     login = _login(client, email)
+    access_token = login.json()["access_token"]
     refresh_token = login.cookies.get("refresh_token")
     assert refresh_token
 
-    logout = client.post("/auth/logout")
+    logout = _request_with_refresh_cookie(
+        client,
+        "post",
+        "/auth/logout",
+        refresh_token,
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
     assert logout.status_code == 204
     cookie = logout.headers.get("set-cookie", "").lower()
     assert "refresh_token=\"\"" in cookie
@@ -196,7 +211,7 @@ def test_logout_happy_path_clears_cookie_and_revokes_session(client: TestClient)
     assert "samesite=strict" in cookie
     assert "path=/auth" in cookie
 
-    reused_after_logout = client.post("/auth/refresh", cookies={"refresh_token": refresh_token})
+    reused_after_logout = _request_with_refresh_cookie(client, "post", "/auth/refresh", refresh_token)
     assert reused_after_logout.status_code == 401
     assert reused_after_logout.json()["error"]["code"] == "AUTH_REFRESH_REUSED"
 
@@ -239,7 +254,7 @@ def test_delete_me_soft_delete_is_exposed_and_revokes_access(client: TestClient)
     assert me_after_delete.status_code == 401
     assert me_after_delete.json()["error"]["code"] == "AUTH_UNAUTHORIZED"
 
-    refresh_after_delete = client.post("/auth/refresh", cookies={"refresh_token": refresh_token})
+    refresh_after_delete = _request_with_refresh_cookie(client, "post", "/auth/refresh", refresh_token)
     assert refresh_after_delete.status_code == 401
     assert refresh_after_delete.json()["error"]["code"] == "AUTH_REFRESH_REUSED"
 
