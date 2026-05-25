@@ -62,6 +62,15 @@ def client() -> TestClient:
     os.environ.update(env)
     app = create_app()
     with TestClient(app) as test_client:
+        email = f"teams-{uuid4().hex}@example.com"
+        password = "supersecret123"
+        register = test_client.post("/auth/register", json={"email": email, "password": password})
+        assert register.status_code == 200
+
+        login = test_client.post("/auth/login", json={"email": email, "password": password})
+        assert login.status_code == 200
+        access_token = login.json()["access_token"]
+        test_client.headers.update({"Authorization": f"Bearer {access_token}"})
         yield test_client
     for key, value in previous.items():
         if value is None:

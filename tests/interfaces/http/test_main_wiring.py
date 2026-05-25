@@ -201,6 +201,27 @@ class TestMainWiring(unittest.TestCase):
         self.assertEqual(body["error"]["code"], "AUTH_VALIDATION_ERROR")
         self.assertIn("errors", body["error"]["details"])
 
+    def test_global_auth_protects_non_public_routes_by_default(self) -> None:
+        env = {
+            "AUTH_JWT_SECRET": "secret",
+            "AUTH_REFRESH_SECRET": "refresh",
+            "AUTH_JWT_ISSUER": "scoutai",
+            "AUTH_JWT_AUDIENCE": "scoutai-client",
+            "DATABASE_URL": "postgresql://test",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch("src.interfaces.http.main.psycopg.connect", return_value=_FakeConnection()):
+                app = create_app()
+
+        with TestClient(app) as client:
+            protected = client.get("/players")
+            public = client.post("/auth/login", json={"email": "x", "password": ""})
+
+        self.assertEqual(protected.status_code, 401)
+        self.assertEqual(protected.json()["error"]["code"], "AUTH_UNAUTHORIZED")
+        self.assertEqual(public.status_code, 400)
+        self.assertEqual(public.json()["error"]["code"], "AUTH_VALIDATION_ERROR")
+
 
 if __name__ == "__main__":
     unittest.main()

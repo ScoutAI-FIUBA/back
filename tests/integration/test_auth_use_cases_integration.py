@@ -129,7 +129,7 @@ def test_refresh_happy_path_invalid_missing_and_reuse_paths(client: TestClient) 
     refresh_token = login.cookies.get("refresh_token")
     assert refresh_token
 
-    refreshed = client.post("/auth/refresh")
+    refreshed = client.post("/auth/refresh", cookies={"refresh_token": refresh_token})
     assert refreshed.status_code == 200
     refreshed_token = refreshed.cookies.get("refresh_token")
     assert refreshed_token and refreshed_token != refresh_token
@@ -183,10 +183,15 @@ def test_logout_happy_path_clears_cookie_and_revokes_session(client: TestClient)
     email = f"logout-{uuid4().hex}@example.com"
     _register(client, email)
     login = _login(client, email)
+    access_token = login.json()["access_token"]
     refresh_token = login.cookies.get("refresh_token")
     assert refresh_token
 
-    logout = client.post("/auth/logout")
+    logout = client.post(
+        "/auth/logout",
+        headers={"Authorization": f"Bearer {access_token}"},
+        cookies={"refresh_token": refresh_token},
+    )
     assert logout.status_code == 204
     cookie = logout.headers.get("set-cookie", "").lower()
     assert "refresh_token=\"\"" in cookie

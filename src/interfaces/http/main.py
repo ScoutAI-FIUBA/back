@@ -58,6 +58,15 @@ from src.interfaces.http.team_router import create_team_router
 logger = logging.getLogger(__name__)
 
 _DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS = 5
+_PUBLIC_ROUTES = frozenset(
+    {
+        "/health",
+        "/db-health",
+        "/auth/register",
+        "/auth/login",
+        "/auth/refresh",
+    }
+)
 
 
 def _db_health_connect_timeout_seconds() -> int:
@@ -298,6 +307,54 @@ def create_app() -> FastAPI:
         clock=clock,
         uow=uow,
     )
+
+    @app.middleware("http")
+    async def require_authenticated_user(request: Request, call_next):
+        if request.method == "OPTIONS" or request.url.path in _PUBLIC_ROUTES:
+            return await call_next(request)
+
+        authorization_header = request.headers.get("authorization")
+        if not authorization_header:
+            auth_error = AuthError(
+                code="AUTH_UNAUTHORIZED",
+                message="Missing authorization header",
+            )
+            return JSONResponse(
+                status_code=auth_error_http_status(auth_error.code),
+                content=auth_error.to_envelope(),
+            )
+
+        prefix = "Bearer "
+        if not authorization_header.startswith(prefix):
+            auth_error = AuthError(
+                code="AUTH_TOKEN_INVALID",
+                message="Invalid authorization scheme",
+            )
+            return JSONResponse(
+                status_code=auth_error_http_status(auth_error.code),
+                content=auth_error.to_envelope(),
+            )
+
+        token = authorization_header[len(prefix) :].strip()
+        if not token:
+            auth_error = AuthError(
+                code="AUTH_TOKEN_INVALID",
+                message="Missing bearer token",
+            )
+            return JSONResponse(
+                status_code=auth_error_http_status(auth_error.code),
+                content=auth_error.to_envelope(),
+            )
+
+        try:
+            request.state.user_id = access_token_resolver.resolve_subject(token)
+        except AuthError as exc:
+            return JSONResponse(
+                status_code=auth_error_http_status(exc.code),
+                content=exc.to_envelope(),
+            )
+
+        return await call_next(request)
 
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(request: Request, exc: RequestValidationError):
