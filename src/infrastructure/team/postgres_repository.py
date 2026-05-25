@@ -88,3 +88,8 @@ class PostgresTeamRepository:
         with self._connection.cursor() as cur:
             cur.execute("DELETE FROM teams WHERE id = %(id)s", {"id": team_id})
             return cur.rowcount > 0
+
+    def exists(self, team_id: str) -> bool:
+        with self._connection.cursor() as cur:
+            cur.execute("SELECT 1 FROM teams WHERE id = %(id)s", {"id": team_id})
+            return cur.fetchone() is not None

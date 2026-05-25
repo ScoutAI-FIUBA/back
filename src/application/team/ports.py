@@ -23,6 +23,10 @@ class TeamRepositoryPort(ABC):
     def delete(self, team_id: str) -> bool:
         raise NotImplementedError
 
+    @abstractmethod
+    def exists(self, team_id: str) -> bool:
+        raise NotImplementedError
+
 
 class TeamClockPort(ABC):
     @abstractmethod

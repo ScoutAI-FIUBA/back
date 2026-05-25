@@ -1,4 +1,5 @@
 PLAYER_NOT_FOUND = "PLAYER_NOT_FOUND"
+TEAM_NOT_FOUND = "TEAM_NOT_FOUND"
 
 
 class PlayerError(Exception):
@@ -16,6 +17,6 @@ class PlayerError(Exception):
 
 
 def player_error_http_status(code: str) -> int:
-    if code == PLAYER_NOT_FOUND:
+    if code in (PLAYER_NOT_FOUND, TEAM_NOT_FOUND):
         return 404
     return 400

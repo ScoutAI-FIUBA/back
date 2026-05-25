@@ -45,8 +45,10 @@ from src.infrastructure.players.postgres_player_repository import PostgresPlayer
 from src.interfaces.http.auth_router import create_auth_router
 from src.interfaces.http.players_router import create_players_router
 from src.application.players.use_cases import (
+    AssignPlayerTeamUseCase,
     CreatePlayerUseCase,
     DeletePlayerUseCase,
+    ListPlayersByTeamUseCase,
     ListPlayersUseCase,
     UpdatePlayerUseCase,
 )
@@ -283,8 +285,10 @@ def create_app() -> FastAPI:
         create_players_router(
             create_player_use_case=CreatePlayerUseCase(players=players_repo, ids=ids, uow=uow),
             list_players_use_case=ListPlayersUseCase(players=players_repo),
+            list_players_by_team_use_case=ListPlayersByTeamUseCase(players=players_repo),
             update_player_use_case=UpdatePlayerUseCase(players=players_repo, uow=uow),
             delete_player_use_case=DeletePlayerUseCase(players=players_repo, uow=uow),
+            assign_player_team_use_case=AssignPlayerTeamUseCase(players=players_repo, teams=teams_repo, uow=uow),
         )
     )
 

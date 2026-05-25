@@ -10,10 +10,13 @@ from pydantic import BaseModel, Field
 
 from src.application.players.errors import PlayerError, player_error_http_status
 from src.application.players.use_cases import (
+    AssignPlayerTeamCommand,
+    AssignPlayerTeamUseCase,
     CreatePlayerCommand,
     CreatePlayerUseCase,
     DeletePlayerCommand,
     DeletePlayerUseCase,
+    ListPlayersByTeamUseCase,
     ListPlayersUseCase,
     UpdatePlayerCommand,
     UpdatePlayerUseCase,
@@ -38,6 +41,7 @@ def _to_player_response(player) -> dict[str, object]:
         "height_cm": player.height_cm,
         "weight_kg": player.weight_kg,
         "primary_position": player.primary_position,
+        "team_id": player.team_id,
     }
 
 
@@ -45,8 +49,10 @@ def create_players_router(
     *,
     create_player_use_case: CreatePlayerUseCase,
     list_players_use_case: ListPlayersUseCase,
+    list_players_by_team_use_case: ListPlayersByTeamUseCase,
     update_player_use_case: UpdatePlayerUseCase,
     delete_player_use_case: DeletePlayerUseCase,
+    assign_player_team_use_case: AssignPlayerTeamUseCase,
 ) -> APIRouter:
     router = APIRouter(prefix="/players", tags=["players"])
 
@@ -68,8 +74,11 @@ def create_players_router(
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
 
     @router.get("", response_model=None)
-    def list_players():
-        players = list_players_use_case.execute()
+    def list_players(team_id: UUID | None = None):
+        if team_id is None:
+            players = list_players_use_case.execute()
+        else:
+            players = list_players_by_team_use_case.execute(str(team_id))
         return {"players": [_to_player_response(player) for player in players]}
 
     @router.put("/{player_id}", response_model=None)
@@ -95,6 +104,16 @@ def create_players_router(
         try:
             delete_player_use_case.execute(DeletePlayerCommand(id=str(player_id)))
             return Response(status_code=HTTPStatus.NO_CONTENT)
+        except PlayerError as exc:
+            return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
+
+    @router.put("/{player_id}/team/{team_id}", response_model=None)
+    def assign_player_to_team(player_id: UUID, team_id: UUID):
+        try:
+            player = assign_player_team_use_case.execute(
+                AssignPlayerTeamCommand(player_id=str(player_id), team_id=str(team_id))
+            )
+            return {"player": _to_player_response(player)}
         except PlayerError as exc:
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
 

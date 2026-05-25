@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from src.application.players.errors import PLAYER_NOT_FOUND, PlayerError
+from src.application.players.errors import PLAYER_NOT_FOUND, TEAM_NOT_FOUND, PlayerError
 from src.application.players.ports import IdGeneratorPort, PlayerRepositoryPort, UnitOfWorkPort
+from src.application.team.ports import TeamRepositoryPort
 from src.domain.players.entities import Player
 
 
@@ -34,6 +35,12 @@ class DeletePlayerCommand:
     id: str
 
 
+@dataclass(frozen=True)
+class AssignPlayerTeamCommand:
+    player_id: str
+    team_id: str
+
+
 class CreatePlayerUseCase:
     def __init__(self, *, players: PlayerRepositoryPort, ids: IdGeneratorPort, uow: UnitOfWorkPort) -> None:
         self._players = players
@@ -49,6 +56,7 @@ class CreatePlayerUseCase:
             height_cm=command.height_cm,
             weight_kg=command.weight_kg,
             primary_position=command.primary_position,
+            team_id=None,
         )
         with self._uow.transaction():
             return self._players.create(player)
@@ -60,6 +68,14 @@ class ListPlayersUseCase:
 
     def execute(self) -> list[Player]:
         return self._players.list_all()
+
+
+class ListPlayersByTeamUseCase:
+    def __init__(self, *, players: PlayerRepositoryPort) -> None:
+        self._players = players
+
+    def execute(self, team_id: str) -> list[Player]:
+        return self._players.list_by_team(team_id)
 
 
 class UpdatePlayerUseCase:
@@ -78,6 +94,7 @@ class UpdatePlayerUseCase:
                     height_cm=command.height_cm,
                     weight_kg=command.weight_kg,
                     primary_position=command.primary_position,
+                    team_id=None,
                 )
             )
         if updated is None:
@@ -95,3 +112,19 @@ class DeletePlayerUseCase:
             deleted = self._players.delete(command.id)
         if not deleted:
             raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")
+
+
+class AssignPlayerTeamUseCase:
+    def __init__(self, *, players: PlayerRepositoryPort, teams: TeamRepositoryPort, uow: UnitOfWorkPort) -> None:
+        self._players = players
+        self._teams = teams
+        self._uow = uow
+
+    def execute(self, command: AssignPlayerTeamCommand) -> Player:
+        with self._uow.transaction():
+            if not self._teams.exists(command.team_id):
+                raise PlayerError(code=TEAM_NOT_FOUND, message="Team not found")
+            player = self._players.assign_team(player_id=command.player_id, team_id=command.team_id)
+        if player is None:
+            raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")
+        return player

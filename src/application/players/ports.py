@@ -23,3 +23,10 @@ class PlayerRepositoryPort(ABC):
     def delete(self, player_id: str) -> bool:
         raise NotImplementedError
 
+    @abstractmethod
+    def assign_team(self, *, player_id: str, team_id: str) -> Player | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_by_team(self, team_id: str) -> list[Player]:
+        raise NotImplementedError

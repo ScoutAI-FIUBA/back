@@ -51,6 +51,7 @@ class TestMainWiring(unittest.TestCase):
             "/auth/me",
             "/players",
             "/players/{player_id}",
+            "/players/{player_id}/team/{team_id}",
             "/teams",
             "/teams/{team_id}",
         ):
