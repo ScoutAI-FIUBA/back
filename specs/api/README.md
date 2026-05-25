@@ -8,3 +8,4 @@ Use: `<domain>-<action>-endpoint.md`
 
 - Auth API: `specs/api/auth.md`
 - Players API: `specs/api/players.md`
+- Team API: `specs/api/teams.md`

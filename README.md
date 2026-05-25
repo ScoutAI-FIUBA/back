@@ -34,6 +34,46 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5435/scoutai_dev \
   pytest -q -m integration tests/integration
 ```
 
+Team CRUD integration coverage lives in `tests/integration/test_team_crud_integration.py`.
+
+## API endpoints
+
+### Health
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/health` | Service health status. |
+| `GET` | `/db-health` | Database connectivity health check. |
+
+### Auth
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/auth/register` | Register a user account. |
+| `POST` | `/auth/login` | Authenticate and issue access token + refresh cookie. |
+| `POST` | `/auth/refresh` | Rotate refresh session and return a new access token. |
+| `POST` | `/auth/logout` | Revoke refresh session and clear refresh cookie. |
+| `GET` | `/auth/me` | Return current authenticated user. |
+| `DELETE` | `/auth/me` | Delete current authenticated user. |
+
+### Teams
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/teams` | Create team. |
+| `GET` | `/teams` | List teams. |
+| `PUT` | `/teams/{team_id}` | Update team by UUID. |
+| `DELETE` | `/teams/{team_id}` | Delete team by UUID. |
+
+- Teams contract and examples: `specs/api/teams.md`.
+- Teams persistence: migration `src/infrastructure/team/migrations/001_team_foundation.sql` creates `teams` table with required fields:
+  - `id` (UUID, primary key)
+  - `name` (TEXT, not null)
+  - `short_name` (TEXT, not null)
+  - `city` (TEXT, not null)
+  - `country` (TEXT, not null)
+  - `created_at` (TIMESTAMPTZ, not null)
+
 ## Deploy
 
 Production config lives in `render.yaml` and `.env.example`. Set env vars in the Render dashboard before deploying.

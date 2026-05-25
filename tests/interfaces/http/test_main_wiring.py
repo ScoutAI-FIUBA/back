@@ -28,7 +28,7 @@ class _FakeConnection:
 
 
 class TestMainWiring(unittest.TestCase):
-    def test_create_app_registers_health_auth_and_players_routes(self) -> None:
+    def test_create_app_registers_health_auth_players_and_teams_routes(self) -> None:
         env = {
             "AUTH_JWT_SECRET": "secret",
             "AUTH_REFRESH_SECRET": "refresh",
@@ -51,6 +51,8 @@ class TestMainWiring(unittest.TestCase):
             "/auth/me",
             "/players",
             "/players/{player_id}",
+            "/teams",
+            "/teams/{team_id}",
         ):
             self.assertIn(path, paths)
 

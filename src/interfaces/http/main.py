@@ -25,6 +25,12 @@ from src.application.auth.use_cases import (
     RefreshSessionUseCase,
     RegisterUserUseCase,
 )
+from src.application.team.use_cases import (
+    CreateTeamUseCase,
+    DeleteTeamUseCase,
+    ListTeamsUseCase,
+    UpdateTeamUseCase,
+)
 from src.application.use_cases import GetHealthStatus
 from src.infrastructure.auth.argon2_password_hasher import Argon2PasswordHasher
 from src.infrastructure.auth.jwt_access_token_resolver import JWTAccessTokenResolver
@@ -44,6 +50,8 @@ from src.application.players.use_cases import (
     ListPlayersUseCase,
     UpdatePlayerUseCase,
 )
+from src.infrastructure.team.postgres_repository import PostgresTeamRepository
+from src.interfaces.http.team_router import create_team_router
 
 logger = logging.getLogger(__name__)
 
@@ -205,6 +213,7 @@ def create_app() -> FastAPI:
     users_repo = PostgresUserRepository(connection=conn)
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)
     players_repo = PostgresPlayerRepository(connection=conn)
+    teams_repo = PostgresTeamRepository(connection=conn)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
     refresh_tokens = OpaqueRefreshTokenService(secret=refresh_secret)
@@ -259,6 +268,14 @@ def create_app() -> FastAPI:
                 uow=uow,
             ),
             access_token_resolver=access_token_resolver.resolve_subject,
+        )
+    )
+    app.include_router(
+        create_team_router(
+            create_team_use_case=CreateTeamUseCase(teams=teams_repo, clock=clock, ids=ids),
+            list_teams_use_case=ListTeamsUseCase(teams=teams_repo),
+            update_team_use_case=UpdateTeamUseCase(teams=teams_repo),
+            delete_team_use_case=DeleteTeamUseCase(teams=teams_repo),
         )
     )
 
