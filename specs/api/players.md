@@ -52,7 +52,8 @@ Player response includes:
     "birth_date": "2007-07-13",
     "height_cm": 180,
     "weight_kg": 72,
-    "primary_position": "RW"
+    "primary_position": "RW",
+    "team_id": null
   }
 }
 ```
@@ -119,7 +120,8 @@ Player response includes:
     "birth_date": "2007-07-13",
     "height_cm": 180,
     "weight_kg": 72,
-    "primary_position": "RW"
+    "primary_position": "RW",
+    "team_id": null
   }
 }
 ```
