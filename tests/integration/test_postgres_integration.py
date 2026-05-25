@@ -14,8 +14,11 @@ def test_database_is_reachable_and_auth_tables_exist() -> None:
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT to_regclass('public.users'), to_regclass('public.auth_refresh_sessions')")
-            users_table, refresh_sessions_table = cur.fetchone()
+            cur.execute(
+                "SELECT to_regclass('public.users'), to_regclass('public.auth_refresh_sessions'), to_regclass('public.teams')"
+            )
+            users_table, refresh_sessions_table, teams_table = cur.fetchone()
 
     assert users_table == "users"
     assert refresh_sessions_table == "auth_refresh_sessions"
+    assert teams_table == "teams"

@@ -43,7 +43,15 @@ class TestMainWiring(unittest.TestCase):
         paths = {route.path for route in app.routes}
         self.assertIn("/health", paths)
         self.assertIn("/db-health", paths)
-        for path in ("/auth/register", "/auth/login", "/auth/refresh", "/auth/logout", "/auth/me"):
+        for path in (
+            "/auth/register",
+            "/auth/login",
+            "/auth/refresh",
+            "/auth/logout",
+            "/auth/me",
+            "/teams",
+            "/teams/{team_id}",
+        ):
             self.assertIn(path, paths)
 
     def test_db_health_returns_ok_when_database_is_reachable(self) -> None:

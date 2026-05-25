@@ -11,8 +11,8 @@ def main() -> None:
     if not database_url:
         raise RuntimeError("Missing required environment variable: DATABASE_URL")
 
-    migration_dir = Path("src/infrastructure/auth/migrations")
-    migration_files = sorted(migration_dir.glob("*.sql"))
+    infrastructure_dir = Path("src/infrastructure")
+    migration_files = sorted(infrastructure_dir.glob("*/migrations/*.sql"))
 
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
