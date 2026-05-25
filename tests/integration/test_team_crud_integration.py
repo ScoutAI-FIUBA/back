@@ -8,8 +8,6 @@ from fastapi.testclient import TestClient
 import psycopg
 import pytest
 
-from src.interfaces.http.main import create_app
-
 
 pytestmark = pytest.mark.integration
 
@@ -57,6 +55,8 @@ def _tables_clean() -> None:
 
 @pytest.fixture
 def client() -> TestClient:
+    from src.interfaces.http.main import create_app
+
     env = _required_env()
     previous = {key: os.environ.get(key) for key in env}
     os.environ.update(env)

@@ -14,6 +14,11 @@ from typing import BinaryIO
 import boto3
 from botocore.client import BaseClient, Config
 
+# Files above this size use explicit S3 multipart upload to R2.
+MULTIPART_THRESHOLD_BYTES = 100 * 1024 * 1024
+# Part size for multipart uploads (S3 minimum per part is 5 MiB, except the last).
+MULTIPART_PART_SIZE_BYTES = 64 * 1024 * 1024
+
 
 class StorageNotConfiguredError(RuntimeError):
     """Raised when storage operations are invoked without R2 credentials."""
@@ -55,6 +60,32 @@ def _build_client(settings: R2Settings) -> BaseClient:
     )
 
 
+def _file_size(file: BinaryIO) -> int | None:
+    """Return stream length when seekable; None if size cannot be determined."""
+    tell = getattr(file, "tell", None)
+    seek = getattr(file, "seek", None)
+    if tell is None or seek is None:
+        return None
+    try:
+        position = tell()
+        seek(0, os.SEEK_END)
+        size = tell()
+        seek(position)
+        return size
+    except OSError:
+        return None
+
+
+def _rewind(file: BinaryIO) -> None:
+    seek = getattr(file, "seek", None)
+    if seek is None:
+        return
+    try:
+        seek(0)
+    except OSError:
+        pass
+
+
 class R2Storage:
     """Thin wrapper over boto3 S3 client targeting Cloudflare R2."""
 
@@ -76,11 +107,87 @@ class R2Storage:
             self._client = _build_client(self._settings)
         return self._client, self._settings
 
-    def upload_video(self, file: BinaryIO, key: str, content_type: str | None = None) -> str:
-        """Upload a video file to R2. Returns the object key on success."""
+    def upload_video(
+        self,
+        file: BinaryIO,
+        key: str,
+        content_type: str | None = None,
+        *,
+        size: int | None = None,
+    ) -> str:
+        """Upload a video file to R2. Returns the object key on success.
+
+        Uses a single PUT via upload_fileobj for smaller files. When ``size`` is
+        known (or the stream is seekable) and exceeds MULTIPART_THRESHOLD_BYTES,
+        uses explicit S3 multipart upload with MULTIPART_PART_SIZE_BYTES chunks.
+        """
+        effective_size = size if size is not None else _file_size(file)
+        _rewind(file)
+        if (
+            effective_size is not None
+            and effective_size > MULTIPART_THRESHOLD_BYTES
+        ):
+            return self._upload_multipart(file, key, content_type)
+        return self._upload_simple(file, key, content_type)
+
+    def _upload_simple(
+        self, file: BinaryIO, key: str, content_type: str | None
+    ) -> str:
         client, settings = self._require_client()
         extra_args = {"ContentType": content_type} if content_type else {}
         client.upload_fileobj(file, settings.bucket_name, key, ExtraArgs=extra_args)
+        return key
+
+    def _upload_multipart(
+        self, file: BinaryIO, key: str, content_type: str | None
+    ) -> str:
+        client, settings = self._require_client()
+        create_kwargs: dict[str, str] = {
+            "Bucket": settings.bucket_name,
+            "Key": key,
+        }
+        if content_type:
+            create_kwargs["ContentType"] = content_type
+
+        created = client.create_multipart_upload(**create_kwargs)
+        upload_id = created["UploadId"]
+        parts: list[dict[str, str | int]] = []
+        part_number = 1
+
+        try:
+            while True:
+                chunk = file.read(MULTIPART_PART_SIZE_BYTES)
+                if not chunk:
+                    break
+                uploaded = client.upload_part(
+                    Bucket=settings.bucket_name,
+                    Key=key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    Body=chunk,
+                )
+                parts.append(
+                    {"PartNumber": part_number, "ETag": uploaded["ETag"]}
+                )
+                part_number += 1
+
+            if not parts:
+                raise ValueError("Cannot upload an empty file to R2")
+
+            client.complete_multipart_upload(
+                Bucket=settings.bucket_name,
+                Key=key,
+                UploadId=upload_id,
+                MultipartUpload={"Parts": parts},
+            )
+        except Exception:
+            client.abort_multipart_upload(
+                Bucket=settings.bucket_name,
+                Key=key,
+                UploadId=upload_id,
+            )
+            raise
+
         return key
 
     def generate_presigned_url(self, key: str, expires_in: int = 3600) -> str:

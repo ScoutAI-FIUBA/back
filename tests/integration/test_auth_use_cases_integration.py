@@ -9,7 +9,6 @@ import psycopg
 import pytest
 
 from src.application.auth.use_cases import HardDeleteUserCommand
-from src.interfaces.http.main import create_app
 
 
 pytestmark = pytest.mark.integration
@@ -62,11 +61,13 @@ def _auth_tables_clean() -> None:
 
 @pytest.fixture
 def client() -> TestClient:
+    from src.interfaces.http.main import create_app
+
     env = _required_env()
     previous = {key: os.environ.get(key) for key in env}
     os.environ.update(env)
     app = create_app()
-    with TestClient(app) as test_client:
+    with TestClient(app, base_url="https://testserver") as test_client:
         yield test_client
     for key, value in previous.items():
         if value is None:
@@ -139,7 +140,9 @@ def test_refresh_happy_path_invalid_missing_and_reuse_paths(client: TestClient) 
     assert "secure" in cookie_header
     assert "samesite=strict" in cookie_header
 
-    with TestClient(create_app()) as missing_cookie_client:
+    from src.interfaces.http.main import create_app
+
+    with TestClient(create_app(), base_url="https://testserver") as missing_cookie_client:
         no_cookie = missing_cookie_client.post("/auth/refresh")
     assert no_cookie.status_code == 401
     assert no_cookie.json()["error"]["code"] == "AUTH_UNAUTHORIZED"
