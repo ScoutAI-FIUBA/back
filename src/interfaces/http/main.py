@@ -338,6 +338,3 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail="Database unavailable")
 
     return app
-
-
-app = create_app()
