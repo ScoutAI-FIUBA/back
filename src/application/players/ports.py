@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date
 from src.application.common.ports import IdGeneratorPort, UnitOfWorkPort
 
 from src.domain.players.entities import Player
@@ -16,10 +17,27 @@ class PlayerRepositoryPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def update(self, player: Player) -> Player | None:
+    def update(
+        self,
+        *,
+        player_id: str,
+        first_name: str,
+        last_name: str,
+        birth_date: date,
+        height_cm: int,
+        weight_kg: int,
+        primary_position: str,
+    ) -> Player | None:
         raise NotImplementedError
 
     @abstractmethod
     def delete(self, player_id: str) -> bool:
         raise NotImplementedError
 
+    @abstractmethod
+    def assign_team(self, *, player_id: str, team_id: str) -> Player | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_by_team(self, team_id: str) -> list[Player]:
+        raise NotImplementedError

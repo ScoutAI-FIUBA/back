@@ -27,14 +27,13 @@ def _required_env() -> dict[str, str]:
 
 
 def _apply_migrations(database_url: str) -> None:
-    migration_dir = Path("src/infrastructure/auth/migrations")
-    migration_files = sorted(migration_dir.glob("*.sql"))
-
+    migration_dirs = [Path("src/infrastructure/auth/migrations"), Path("src/infrastructure/team/migrations")]
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
-            for migration_file in migration_files:
-                sql = migration_file.read_text(encoding="utf-8")
-                cur.execute(sql)
+            for migration_dir in migration_dirs:
+                for migration_file in sorted(migration_dir.glob("*.sql")):
+                    sql = migration_file.read_text(encoding="utf-8")
+                    cur.execute(sql)
         conn.commit()
 
 
@@ -49,7 +48,8 @@ def _players_table_clean() -> None:
     env = _required_env()
     with psycopg.connect(env["DATABASE_URL"]) as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE players")
+            cur.execute("TRUNCATE TABLE players RESTART IDENTITY CASCADE")
+            cur.execute("TRUNCATE TABLE teams RESTART IDENTITY CASCADE")
         conn.commit()
 
 
@@ -78,6 +78,16 @@ def _payload() -> dict[str, object]:
         "height_cm": 170,
         "weight_kg": 72,
         "primary_position": "RW",
+    }
+
+
+def _team_payload() -> dict[str, str]:
+    suffix = uuid4().hex[:8]
+    return {
+        "name": f"Team {suffix}",
+        "short_name": f"T{suffix[:4]}",
+        "city": "Buenos Aires",
+        "country": "Argentina",
     }
 
 
@@ -149,3 +159,114 @@ def test_player_request_validation_contract(client: TestClient) -> None:
         },
     )
     assert invalid.status_code == 422
+
+
+def test_assign_player_to_team_persists_and_can_be_queried_by_team(client: TestClient) -> None:
+    created_team = client.post("/teams", json=_team_payload())
+    assert created_team.status_code == 201
+    team_id = created_team.json()["team"]["id"]
+
+    created_player = client.post("/players", json=_payload())
+    assert created_player.status_code == 201
+    player_id = created_player.json()["player"]["id"]
+
+    assigned = client.put(f"/players/{player_id}/team/{team_id}")
+    assert assigned.status_code == 200
+    assert assigned.json()["player"]["team_id"] == team_id
+
+    filtered = client.get("/players", params={"team_id": team_id})
+    assert filtered.status_code == 200
+    assert len(filtered.json()["players"]) == 1
+    assert filtered.json()["players"][0]["id"] == player_id
+    assert filtered.json()["players"][0]["team_id"] == team_id
+
+
+def test_player_update_preserves_assigned_team(client: TestClient) -> None:
+    created_team = client.post("/teams", json=_team_payload())
+    assert created_team.status_code == 201
+    team_id = created_team.json()["team"]["id"]
+
+    created_player = client.post("/players", json=_payload())
+    assert created_player.status_code == 201
+    player = created_player.json()["player"]
+    player_id = player["id"]
+
+    assigned = client.put(f"/players/{player_id}/team/{team_id}")
+    assert assigned.status_code == 200
+    assert assigned.json()["player"]["team_id"] == team_id
+
+    updated = client.put(
+        f"/players/{player_id}",
+        json={
+            "first_name": "Leo",
+            "last_name": player["last_name"],
+            "birth_date": "1987-06-24",
+            "height_cm": 171,
+            "weight_kg": 73,
+            "primary_position": "AM",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["player"]["team_id"] == team_id
+
+
+def test_assign_player_to_missing_team_returns_404(client: TestClient) -> None:
+    created_player = client.post("/players", json=_payload())
+    assert created_player.status_code == 201
+    player_id = created_player.json()["player"]["id"]
+
+    assign_missing_team = client.put(f"/players/{player_id}/team/{uuid4()}")
+    assert assign_missing_team.status_code == 404
+    assert assign_missing_team.json()["error"]["code"] == "TEAM_NOT_FOUND"
+
+
+def test_deleting_team_keeps_player_and_clears_team_relation(client: TestClient) -> None:
+    created_team = client.post("/teams", json=_team_payload())
+    assert created_team.status_code == 201
+    team_id = created_team.json()["team"]["id"]
+
+    created_player = client.post("/players", json=_payload())
+    assert created_player.status_code == 201
+    player_id = created_player.json()["player"]["id"]
+
+    assigned = client.put(f"/players/{player_id}/team/{team_id}")
+    assert assigned.status_code == 200
+    assert assigned.json()["player"]["team_id"] == team_id
+
+    deleted_team = client.delete(f"/teams/{team_id}")
+    assert deleted_team.status_code == 204
+
+    players = client.get("/players")
+    assert players.status_code == 200
+    assert len(players.json()["players"]) == 1
+    assert players.json()["players"][0]["id"] == player_id
+    assert players.json()["players"][0]["team_id"] is None
+
+    filtered = client.get("/players", params={"team_id": team_id})
+    assert filtered.status_code == 200
+    assert filtered.json()["players"] == []
+
+
+def test_deleting_player_does_not_delete_team(client: TestClient) -> None:
+    created_team = client.post("/teams", json=_team_payload())
+    assert created_team.status_code == 201
+    team_id = created_team.json()["team"]["id"]
+
+    created_player = client.post("/players", json=_payload())
+    assert created_player.status_code == 201
+    player_id = created_player.json()["player"]["id"]
+
+    assigned = client.put(f"/players/{player_id}/team/{team_id}")
+    assert assigned.status_code == 200
+
+    deleted_player = client.delete(f"/players/{player_id}")
+    assert deleted_player.status_code == 204
+
+    teams = client.get("/teams")
+    assert teams.status_code == 200
+    assert len(teams.json()["teams"]) == 1
+    assert teams.json()["teams"][0]["id"] == team_id
+
+    filtered = client.get("/players", params={"team_id": team_id})
+    assert filtered.status_code == 200
+    assert filtered.json()["players"] == []

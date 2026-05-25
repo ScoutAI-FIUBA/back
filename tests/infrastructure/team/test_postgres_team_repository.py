@@ -98,6 +98,11 @@ class TestPostgresTeamRepository(unittest.TestCase):
         self.assertTrue(deleted)
         self.assertIn("DELETE FROM teams", conn.executed[3][0])
 
+        conn.next_row = {"exists": 1}
+        exists = repo.exists("8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d")
+        self.assertTrue(exists)
+        self.assertIn("SELECT 1 FROM teams", conn.executed[4][0])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,9 @@ Field constraints:
 - `weight_kg`: integer, `> 0`, `<= 400`
 - `primary_position`: string, 1..120 chars
 
+Player response includes:
+- `team_id`: nullable UUID, assigned team or `null`.
+
 ## Endpoints
 
 ### POST /players
@@ -49,7 +52,8 @@ Field constraints:
     "birth_date": "2007-07-13",
     "height_cm": 180,
     "weight_kg": 72,
-    "primary_position": "RW"
+    "primary_position": "RW",
+    "team_id": null
   }
 }
 ```
@@ -58,6 +62,7 @@ Field constraints:
 
 ### GET /players
 - Lists players ordered by `last_name ASC, first_name ASC`.
+- Optional query param: `team_id` (UUID) to filter players by team.
 - `200 OK` response:
 
 ```json
@@ -70,11 +75,35 @@ Field constraints:
       "birth_date": "2007-07-13",
       "height_cm": 180,
       "weight_kg": 72,
-      "primary_position": "RW"
+      "primary_position": "RW",
+      "team_id": "4c11b90f-a348-42c8-a6f0-2db1416cb6d5"
     }
   ]
 }
 ```
+
+### PUT /players/{player_id}/team/{team_id}
+- Associates a player to an existing team.
+- Path params: `player_id` (UUID), `team_id` (UUID).
+- `200 OK` response:
+
+```json
+{
+  "player": {
+    "id": "4a84e16a-bf44-4f9f-9b7c-d309822cdfdb",
+    "first_name": "Lamine",
+    "last_name": "Yamal",
+    "birth_date": "2007-07-13",
+    "height_cm": 180,
+    "weight_kg": 72,
+    "primary_position": "RW",
+    "team_id": "4c11b90f-a348-42c8-a6f0-2db1416cb6d5"
+  }
+}
+```
+
+- `404 Not Found` for missing player (`PLAYER_NOT_FOUND`) or missing team (`TEAM_NOT_FOUND`).
+- `422 Unprocessable Entity`: invalid UUIDs.
 
 ### PUT /players/{player_id}
 - Updates an existing player.
@@ -91,7 +120,8 @@ Field constraints:
     "birth_date": "2007-07-13",
     "height_cm": 180,
     "weight_kg": 72,
-    "primary_position": "RW"
+    "primary_position": "RW",
+    "team_id": null
   }
 }
 ```
@@ -137,4 +167,8 @@ Field constraints:
   - `birth_date` (`DATE`)
   - `height_cm` (`INTEGER`, check `> 0`)
   - `weight_kg` (`INTEGER`, check `> 0`)
-  - `primary_position` (`VARCHAR(120)`)
+- `primary_position` (`VARCHAR(120)`)
+- `team_id` (`UUID`, nullable, FK to `teams.id` with `ON DELETE SET NULL`)
+
+Association migration:
+- `src/infrastructure/team/migrations/002_player_team_association.sql`
