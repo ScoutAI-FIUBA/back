@@ -7,6 +7,7 @@ storage credentials configured (useful for first deploys / environments without 
 
 from __future__ import annotations
 
+import contextlib
 import os
 from dataclasses import dataclass
 from typing import BinaryIO
@@ -181,11 +182,12 @@ class R2Storage:
                 MultipartUpload={"Parts": parts},
             )
         except Exception:
-            client.abort_multipart_upload(
-                Bucket=settings.bucket_name,
-                Key=key,
-                UploadId=upload_id,
-            )
+            with contextlib.suppress(Exception):
+                client.abort_multipart_upload(
+                    Bucket=settings.bucket_name,
+                    Key=key,
+                    UploadId=upload_id,
+                )
             raise
 
         return key

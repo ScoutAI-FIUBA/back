@@ -22,7 +22,7 @@ pip install -r requirements.txt
 cp .env.example .env
 python scripts/wait_for_db.py
 python scripts/apply_migrations.py
-uvicorn src.interfaces.http.main:app --reload
+uvicorn src.interfaces.http.main:create_app --factory --reload
 ```
 
 ## Tests

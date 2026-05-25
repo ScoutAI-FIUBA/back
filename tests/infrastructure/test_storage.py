@@ -190,6 +190,34 @@ class TestR2StorageUpload(unittest.TestCase):
         )
         self.client.complete_multipart_upload.assert_not_called()
 
+    def test_upload_video_multipart_preserves_original_error_when_abort_fails(
+        self,
+    ) -> None:
+        threshold = 1
+        part_size = 1
+        payload = b"ab"
+
+        self.client.create_multipart_upload.return_value = {"UploadId": "upload-4"}
+        self.client.upload_part.side_effect = RuntimeError("network error")
+        self.client.abort_multipart_upload.side_effect = RuntimeError("abort failed")
+
+        with (
+            patch(
+                "src.infrastructure.storage.MULTIPART_THRESHOLD_BYTES", threshold
+            ),
+            patch(
+                "src.infrastructure.storage.MULTIPART_PART_SIZE_BYTES", part_size
+            ),
+        ):
+            with self.assertRaises(RuntimeError) as ctx:
+                self.storage.upload_video(
+                    io.BytesIO(payload),
+                    "videos/fail-abort.mp4",
+                    size=len(payload),
+                )
+
+        self.assertEqual(str(ctx.exception), "network error")
+
     def test_upload_video_infers_size_from_seekable_stream(self) -> None:
         data = b"tiny"
         file = io.BytesIO(data)
