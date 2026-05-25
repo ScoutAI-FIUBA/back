@@ -74,6 +74,19 @@ Team CRUD integration coverage lives in `tests/integration/test_team_crud_integr
   - `country` (TEXT, not null)
   - `created_at` (TIMESTAMPTZ, not null)
 
+### Players
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/players` | Create player. |
+| `GET` | `/players` | List players; use `team_id` query param to filter by team. |
+| `PUT` | `/players/{player_id}` | Update player by UUID. |
+| `PUT` | `/players/{player_id}/team/{team_id}` | Associate player with team UUID. |
+| `DELETE` | `/players/{player_id}` | Delete player by UUID. |
+
+- Players contract and examples: `specs/api/players.md`.
+- Player-team association persistence: `src/infrastructure/team/migrations/002_player_team_association.sql` adds nullable `players.team_id` foreign key to `teams(id)`.
+
 ## Deploy
 
 Production config lives in `render.yaml` and `.env.example`. Set env vars in the Render dashboard before deploying.
@@ -94,6 +107,7 @@ Production config lives in `render.yaml` and `.env.example`. Set env vars in the
   - `POST /players`
   - `GET /players`
   - `PUT /players/{player_id}`
+  - `PUT /players/{player_id}/team/{team_id}`
   - `DELETE /players/{player_id}`
 
 ## Structure
