@@ -189,3 +189,55 @@ def test_assign_player_to_missing_team_returns_404(client: TestClient) -> None:
     assign_missing_team = client.put(f"/players/{player_id}/team/{uuid4()}")
     assert assign_missing_team.status_code == 404
     assert assign_missing_team.json()["error"]["code"] == "TEAM_NOT_FOUND"
+
+
+def test_deleting_team_keeps_player_and_clears_team_relation(client: TestClient) -> None:
+    created_team = client.post("/teams", json=_team_payload())
+    assert created_team.status_code == 201
+    team_id = created_team.json()["team"]["id"]
+
+    created_player = client.post("/players", json=_payload())
+    assert created_player.status_code == 201
+    player_id = created_player.json()["player"]["id"]
+
+    assigned = client.put(f"/players/{player_id}/team/{team_id}")
+    assert assigned.status_code == 200
+    assert assigned.json()["player"]["team_id"] == team_id
+
+    deleted_team = client.delete(f"/teams/{team_id}")
+    assert deleted_team.status_code == 204
+
+    players = client.get("/players")
+    assert players.status_code == 200
+    assert len(players.json()["players"]) == 1
+    assert players.json()["players"][0]["id"] == player_id
+    assert players.json()["players"][0]["team_id"] is None
+
+    filtered = client.get("/players", params={"team_id": team_id})
+    assert filtered.status_code == 200
+    assert filtered.json()["players"] == []
+
+
+def test_deleting_player_does_not_delete_team(client: TestClient) -> None:
+    created_team = client.post("/teams", json=_team_payload())
+    assert created_team.status_code == 201
+    team_id = created_team.json()["team"]["id"]
+
+    created_player = client.post("/players", json=_payload())
+    assert created_player.status_code == 201
+    player_id = created_player.json()["player"]["id"]
+
+    assigned = client.put(f"/players/{player_id}/team/{team_id}")
+    assert assigned.status_code == 200
+
+    deleted_player = client.delete(f"/players/{player_id}")
+    assert deleted_player.status_code == 204
+
+    teams = client.get("/teams")
+    assert teams.status_code == 200
+    assert len(teams.json()["teams"]) == 1
+    assert teams.json()["teams"][0]["id"] == team_id
+
+    filtered = client.get("/players", params={"team_id": team_id})
+    assert filtered.status_code == 200
+    assert filtered.json()["players"] == []
