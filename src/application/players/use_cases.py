@@ -86,16 +86,13 @@ class UpdatePlayerUseCase:
     def execute(self, command: UpdatePlayerCommand) -> Player:
         with self._uow.transaction():
             updated = self._players.update(
-                Player(
-                    id=command.id,
-                    first_name=command.first_name,
-                    last_name=command.last_name,
-                    birth_date=command.birth_date,
-                    height_cm=command.height_cm,
-                    weight_kg=command.weight_kg,
-                    primary_position=command.primary_position,
-                    team_id=None,
-                )
+                player_id=command.id,
+                first_name=command.first_name,
+                last_name=command.last_name,
+                birth_date=command.birth_date,
+                height_cm=command.height_cm,
+                weight_kg=command.weight_kg,
+                primary_position=command.primary_position,
             )
         if updated is None:
             raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")

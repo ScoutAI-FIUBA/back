@@ -181,6 +181,35 @@ def test_assign_player_to_team_persists_and_can_be_queried_by_team(client: TestC
     assert filtered.json()["players"][0]["team_id"] == team_id
 
 
+def test_player_update_preserves_assigned_team(client: TestClient) -> None:
+    created_team = client.post("/teams", json=_team_payload())
+    assert created_team.status_code == 201
+    team_id = created_team.json()["team"]["id"]
+
+    created_player = client.post("/players", json=_payload())
+    assert created_player.status_code == 201
+    player = created_player.json()["player"]
+    player_id = player["id"]
+
+    assigned = client.put(f"/players/{player_id}/team/{team_id}")
+    assert assigned.status_code == 200
+    assert assigned.json()["player"]["team_id"] == team_id
+
+    updated = client.put(
+        f"/players/{player_id}",
+        json={
+            "first_name": "Leo",
+            "last_name": player["last_name"],
+            "birth_date": "1987-06-24",
+            "height_cm": 171,
+            "weight_kg": 73,
+            "primary_position": "AM",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["player"]["team_id"] == team_id
+
+
 def test_assign_player_to_missing_team_returns_404(client: TestClient) -> None:
     created_player = client.post("/players", json=_payload())
     assert created_player.status_code == 201

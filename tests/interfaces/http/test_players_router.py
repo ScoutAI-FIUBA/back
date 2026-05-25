@@ -27,11 +27,32 @@ class _PlayerRepo:
     def list_all(self) -> list[Player]:
         return list(self.by_id.values())
 
-    def update(self, player: Player) -> Player | None:
-        if player.id not in self.by_id:
+    def update(
+        self,
+        *,
+        player_id: str,
+        first_name: str,
+        last_name: str,
+        birth_date: date,
+        height_cm: int,
+        weight_kg: int,
+        primary_position: str,
+    ) -> Player | None:
+        player = self.by_id.get(player_id)
+        if player is None:
             return None
-        self.by_id[player.id] = player
-        return player
+        updated = Player(
+            id=player.id,
+            first_name=first_name,
+            last_name=last_name,
+            birth_date=birth_date,
+            height_cm=height_cm,
+            weight_kg=weight_kg,
+            primary_position=primary_position,
+            team_id=player.team_id,
+        )
+        self.by_id[player.id] = updated
+        return updated
 
     def delete(self, player_id: str) -> bool:
         return self.by_id.pop(player_id, None) is not None
@@ -209,6 +230,45 @@ class TestPlayersRouter(unittest.TestCase):
         listed = list_endpoint(team_id)
         self.assertEqual(len(listed["players"]), 1)
         self.assertEqual(listed["players"][0]["id"], player_id)
+
+    def test_update_preserves_assigned_team(self) -> None:
+        create_endpoint, _, update_endpoint, _, assign_team_endpoint = self._endpoints()
+        created = create_endpoint(
+            type(
+                "PlayerPayload",
+                (),
+                {
+                    "first_name": "Lio",
+                    "last_name": "Messi",
+                    "birth_date": date(1987, 6, 24),
+                    "height_cm": 170,
+                    "weight_kg": 72,
+                    "primary_position": "RW",
+                },
+            )()
+        )
+        player_id = created["player"]["id"]
+        team_id = "00000000-0000-4000-8000-000000000010"
+
+        assigned = assign_team_endpoint(player_id, team_id)
+        self.assertEqual(assigned["player"]["team_id"], team_id)
+
+        updated = update_endpoint(
+            player_id,
+            type(
+                "PlayerPayload",
+                (),
+                {
+                    "first_name": "Leo",
+                    "last_name": "Messi",
+                    "birth_date": date(1987, 6, 24),
+                    "height_cm": 171,
+                    "weight_kg": 73,
+                    "primary_position": "AM",
+                },
+            )(),
+        )
+        self.assertEqual(updated["player"]["team_id"], team_id)
 
 
 if __name__ == "__main__":

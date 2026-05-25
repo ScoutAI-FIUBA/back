@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import date
 from typing import Any, Protocol
 
 from psycopg.rows import dict_row
@@ -66,7 +67,26 @@ class PostgresPlayerRepository:
                 players.append(player)
         return players
 
-    def update(self, player: Player) -> Player | None:
+    def update(
+        self,
+        *,
+        player_id: str,
+        first_name: str,
+        last_name: str,
+        birth_date: date,
+        height_cm: int,
+        weight_kg: int,
+        primary_position: str,
+    ) -> Player | None:
+        params = {
+            "id": player_id,
+            "first_name": first_name,
+            "last_name": last_name,
+            "birth_date": birth_date,
+            "height_cm": height_cm,
+            "weight_kg": weight_kg,
+            "primary_position": primary_position,
+        }
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -81,7 +101,7 @@ class PostgresPlayerRepository:
                 WHERE id = %(id)s
                 RETURNING *
                 """,
-                asdict(player),
+                params,
             )
             row = cur.fetchone()
         return _row_to_player(row)
