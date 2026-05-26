@@ -13,11 +13,11 @@ This folder is the source of truth for product intent, API contracts, and archit
 
 ## Naming conventions
 
-- PRD: `YYYY-MM-DD-<feature>-prd.md`
-- API doc: `<domain>-<action>-endpoint.md`
+- PRD/spec artifacts: `<change-name>-{proposal|spec|design|tasks|apply-progress|verify-report}.md`
+- API doc: `<domain>.md` or `<domain>-<action>-endpoint.md`
 - ADR: `<4-digit-sequence>-<decision-title>.md`
 
-Use kebab-case for file names.
+Use kebab-case for file names and keep one artifact per concern.
 
 ## Workflow
 
