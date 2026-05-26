@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""HTTP dependency bootstrap wiring.
+
+Composes infrastructure adapters and application use cases into a single object
+consumed by route registration.
+"""
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -45,6 +51,13 @@ from src.infrastructure.team.postgres_repository import PostgresTeamRepository
 
 
 class OperationConnection:
+    """Connection wrapper that reuses one psycopg connection per operation.
+
+    Nested repository calls inside the same unit of work share the same
+    connection through a context variable. Outside a transaction, each cursor
+    call opens its own short-lived connection.
+    """
+
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
         self._current_connection: ContextVar[psycopg.Connection | None] = ContextVar(
@@ -54,6 +67,8 @@ class OperationConnection:
 
     @contextmanager
     def cursor(self, *args, **kwargs):
+        """Yields a cursor bound to current transactional connection when present."""
+
         current = self._current_connection.get()
         if current is not None and not current.closed:
             with current.cursor(*args, **kwargs) as cursor:
@@ -66,6 +81,8 @@ class OperationConnection:
 
     @contextmanager
     def transaction(self):
+        """Starts/reuses transactional scope and propagates it via context var."""
+
         current = self._current_connection.get()
         if current is not None and not current.closed:
             with current.transaction():
@@ -82,11 +99,15 @@ class OperationConnection:
 
 
 class SystemClock(ClockPort):
+    """Clock adapter returning UTC timestamps."""
+
     def now(self) -> datetime:
         return datetime.now(timezone.utc)
 
 
 class UUIDIds(AuthIdGeneratorPort):
+    """ID generator adapter based on UUID4 values."""
+
     def new_id(self) -> str:
         return str(uuid.uuid4())
 
@@ -98,6 +119,8 @@ class UUIDIds(AuthIdGeneratorPort):
 
 
 class PsycopgUnitOfWork(UnitOfWorkPort):
+    """Unit-of-work adapter that centralizes transaction boundaries for use cases."""
+
     def __init__(self, connection: OperationConnection) -> None:
         self._connection = connection
 
@@ -109,6 +132,8 @@ class PsycopgUnitOfWork(UnitOfWorkPort):
 
 @dataclass(frozen=True)
 class HttpDependencies:
+    """Composed dependency graph consumed by HTTP route factories."""
+
     register_user_use_case: RegisterUserUseCase
     login_use_case: LoginUseCase
     refresh_session_use_case: RefreshSessionUseCase
@@ -137,6 +162,12 @@ def build_http_dependencies(
     jwt_audience: str,
     database_url: str,
 ) -> HttpDependencies:
+    """Builds concrete adapters/use-cases for the HTTP boundary.
+
+    All auth and player/team repositories share the same operation-scoped
+    connection manager so multi-repository use cases can stay transactional.
+    """
+
     conn = OperationConnection(database_url)
     users_repo = PostgresUserRepository(connection=conn)
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)

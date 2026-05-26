@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Auth HTTP routes.
+
+This router translates transport concerns (headers/cookies/status codes) into
+application command/query objects and maps domain errors to HTTP responses.
+"""
+
 from collections.abc import Callable
 from http import HTTPStatus
 
@@ -35,6 +41,13 @@ class LoginRequest(BaseModel):
 
 
 def _extract_bearer_token(authorization_header: str | None) -> str:
+    """Parses ``Authorization: Bearer <token>`` using auth-domain error codes.
+
+    Raises:
+        AuthError: AUTH_UNAUTHORIZED for missing header; AUTH_TOKEN_INVALID for
+            malformed scheme or empty bearer token.
+    """
+
     if not authorization_header:
         raise AuthError(code="AUTH_UNAUTHORIZED", message="Missing authorization header")
     prefix = "Bearer "
@@ -56,6 +69,13 @@ def create_auth_router(
     delete_current_user_use_case: DeleteCurrentUserUseCase,
     access_token_resolver: Callable[[str], str],
 ) -> APIRouter:
+    """Creates auth endpoints and maps application auth errors to HTTP envelopes.
+
+    Security semantics:
+    - Refresh tokens are only transported via secure, httpOnly cookies.
+    - Access tokens are only accepted from ``Authorization: Bearer`` headers.
+    """
+
     router = APIRouter(prefix="/auth", tags=["auth"])
 
     @router.post("/register", response_model=None)

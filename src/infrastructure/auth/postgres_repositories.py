@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""PostgreSQL repository adapters for auth aggregates.
+
+This module maps low-level row dictionaries into domain entities and keeps SQL
+details localized to the infrastructure layer.
+"""
+
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Protocol
@@ -10,16 +16,22 @@ from src.domain.auth.entities import RefreshSession, User
 
 
 class CursorLike(Protocol):
+    """Minimal DB-API cursor surface required by these adapters."""
+
     def execute(self, query: str, params: dict[str, Any] | tuple[Any, ...] | None = None) -> Any: ...
 
     def fetchone(self) -> dict[str, Any] | tuple[Any, ...] | None: ...
 
 
 class ConnectionLike(Protocol):
+    """Connection surface needed to open repository cursors."""
+
     def cursor(self, *args: Any, **kwargs: Any) -> CursorLike: ...
 
 
 def _row_to_user(row: dict[str, Any] | None) -> User | None:
+    """Converts a raw users row to a domain User entity."""
+
     if row is None:
         return None
     return User(
@@ -36,6 +48,8 @@ def _row_to_user(row: dict[str, Any] | None) -> User | None:
 
 
 def _row_to_refresh_session(row: dict[str, Any] | None) -> RefreshSession | None:
+    """Converts a raw refresh-session row to a domain RefreshSession entity."""
+
     if row is None:
         return None
     return RefreshSession(
@@ -55,6 +69,12 @@ def _row_to_refresh_session(row: dict[str, Any] | None) -> RefreshSession | None
 
 
 class PostgresUserRepository:
+    """User persistence adapter with explicit soft/hard delete semantics.
+
+    `soft_delete` is idempotent (`deleted_at IS NULL` guard) and returns the
+    mutated row only on the first delete.
+    """
+
     def __init__(self, *, connection: ConnectionLike) -> None:
         self._connection = connection
 
@@ -109,6 +129,12 @@ class PostgresUserRepository:
 
 
 class PostgresRefreshSessionRepository:
+    """Refresh-session adapter enforcing one-time rotation primitives.
+
+    Methods expose low-level lifecycle operations; atomic composition is handled
+    by the calling unit of work.
+    """
+
     def __init__(self, *, connection: ConnectionLike) -> None:
         self._connection = connection
 
@@ -171,6 +197,13 @@ class PostgresRefreshSessionRepository:
         new_session: RefreshSession,
         revoked_at: datetime,
     ) -> RefreshSession | None:
+        """Revokes old session then inserts replacement within one transaction.
+
+        Returns:
+            RefreshSession | None: Inserted replacement, or ``None`` when the
+            old session was already revoked (reuse or concurrent rotation).
+        """
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
