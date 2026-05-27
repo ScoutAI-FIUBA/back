@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Player application use cases.
+
+This module coordinates player-related workflows and keeps persistence details
+behind repository and unit-of-work ports.
+"""
+
 from dataclasses import dataclass
 from datetime import date
 
@@ -11,6 +17,8 @@ from src.domain.players.entities import Player
 
 @dataclass(frozen=True)
 class CreatePlayerCommand:
+    """Input contract for creating a player aggregate."""
+
     first_name: str
     last_name: str
     birth_date: date
@@ -21,6 +29,8 @@ class CreatePlayerCommand:
 
 @dataclass(frozen=True)
 class UpdatePlayerCommand:
+    """Input contract for full player profile updates."""
+
     id: str
     first_name: str
     last_name: str
@@ -32,22 +42,30 @@ class UpdatePlayerCommand:
 
 @dataclass(frozen=True)
 class DeletePlayerCommand:
+    """Input contract for deleting a player by identifier."""
+
     id: str
 
 
 @dataclass(frozen=True)
 class AssignPlayerTeamCommand:
+    """Input contract for assigning a player to a team."""
+
     player_id: str
     team_id: str
 
 
 class CreatePlayerUseCase:
+    """Creates a new player inside a single transaction boundary."""
+
     def __init__(self, *, players: PlayerRepositoryPort, ids: IdGeneratorPort, uow: UnitOfWorkPort) -> None:
         self._players = players
         self._ids = ids
         self._uow = uow
 
     def execute(self, command: CreatePlayerCommand) -> Player:
+        """Persists a new player with generated identifier and no initial team."""
+
         player = Player(
             id=self._ids.new_id(),
             first_name=command.first_name,
@@ -63,6 +81,8 @@ class CreatePlayerUseCase:
 
 
 class ListPlayersUseCase:
+    """Read-only listing of all players."""
+
     def __init__(self, *, players: PlayerRepositoryPort) -> None:
         self._players = players
 
@@ -71,6 +91,8 @@ class ListPlayersUseCase:
 
 
 class ListPlayersByTeamUseCase:
+    """Read-only listing scoped to one team identifier."""
+
     def __init__(self, *, players: PlayerRepositoryPort) -> None:
         self._players = players
 
@@ -79,11 +101,15 @@ class ListPlayersByTeamUseCase:
 
 
 class UpdatePlayerUseCase:
+    """Updates a player atomically and maps missing rows to domain-safe errors."""
+
     def __init__(self, *, players: PlayerRepositoryPort, uow: UnitOfWorkPort) -> None:
         self._players = players
         self._uow = uow
 
     def execute(self, command: UpdatePlayerCommand) -> Player:
+        """Returns the updated player or raises PLAYER_NOT_FOUND when absent."""
+
         with self._uow.transaction():
             updated = self._players.update(
                 player_id=command.id,
@@ -100,6 +126,12 @@ class UpdatePlayerUseCase:
 
 
 class DeletePlayerUseCase:
+    """Deletes a player atomically.
+
+    Repository `False` is translated to PLAYER_NOT_FOUND so adapters expose a
+    stable application error contract.
+    """
+
     def __init__(self, *, players: PlayerRepositoryPort, uow: UnitOfWorkPort) -> None:
         self._players = players
         self._uow = uow
@@ -112,6 +144,12 @@ class DeletePlayerUseCase:
 
 
 class AssignPlayerTeamUseCase:
+    """Assigns a player to an existing team in one transaction.
+
+    Team existence is validated first to preserve error semantics: missing team
+    takes precedence over missing player.
+    """
+
     def __init__(self, *, players: PlayerRepositoryPort, teams: TeamRepositoryPort, uow: UnitOfWorkPort) -> None:
         self._players = players
         self._teams = teams
