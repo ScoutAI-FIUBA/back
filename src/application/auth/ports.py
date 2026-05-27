@@ -9,6 +9,13 @@ from src.domain.auth.value_objects import AuthIdentity
 
 
 class UserRepositoryPort(ABC):
+    """Persistence contract for auth users.
+
+    Application semantics:
+    - ``get_by_*`` may return soft-deleted users; use cases enforce auth policy.
+    - ``soft_delete`` is idempotent and returns the mutated entity only once.
+    """
+
     @abstractmethod
     def create(self, user: User) -> User:
         raise NotImplementedError
@@ -31,6 +38,14 @@ class UserRepositoryPort(ABC):
 
 
 class RefreshSessionRepositoryPort(ABC):
+    """Persistence contract for refresh-token lifecycle operations.
+
+    Security invariants consumed by use cases:
+    - ``get_active_by_token_hash`` returns only non-revoked, non-expired sessions.
+    - ``rotate`` returns ``None`` when old session is not rotatable anymore.
+    - revoke methods are idempotent and safe for repeated calls.
+    """
+
     @abstractmethod
     def create(self, session: RefreshSession) -> RefreshSession:
         raise NotImplementedError
@@ -71,6 +86,8 @@ class RefreshSessionRepositoryPort(ABC):
 
 
 class PasswordHasherPort(ABC):
+    """Password hashing boundary for credential verification flows."""
+
     @abstractmethod
     def hash(self, plain_password: str) -> str:
         raise NotImplementedError
@@ -81,12 +98,19 @@ class PasswordHasherPort(ABC):
 
 
 class TokenIssuerPort(ABC):
+    """Access-token issuing boundary (JWT or equivalent)."""
+
     @abstractmethod
     def issue_access(self, identity: AuthIdentity, jti: str, expires_at: datetime) -> str:
         raise NotImplementedError
 
 
 class RefreshTokenServicePort(ABC):
+    """Opaque refresh-token generation/hash boundary.
+
+    Storage invariant: plain tokens never persist; only ``hash`` outputs are stored.
+    """
+
     @abstractmethod
     def generate_plain(self) -> str:
         raise NotImplementedError
@@ -101,12 +125,16 @@ class RefreshTokenServicePort(ABC):
 
 
 class ClockPort(ABC):
+    """Time provider boundary used for deterministic expiration semantics."""
+
     @abstractmethod
     def now(self) -> datetime:
         raise NotImplementedError
 
 
 class AuthIdGeneratorPort(IdGeneratorPort, ABC):
+    """ID factory for auth entity ids plus token-family identifiers."""
+
     @abstractmethod
     def new_jti(self) -> str:
         raise NotImplementedError

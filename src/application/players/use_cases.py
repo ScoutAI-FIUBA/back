@@ -87,6 +87,8 @@ class ListPlayersUseCase:
         self._players = players
 
     def execute(self) -> list[Player]:
+        """Returns repository-provided deterministic listing order."""
+
         return self._players.list_all()
 
 
@@ -97,6 +99,8 @@ class ListPlayersByTeamUseCase:
         self._players = players
 
     def execute(self, team_id: str) -> list[Player]:
+        """Returns players assigned to one team id in stable order."""
+
         return self._players.list_by_team(team_id)
 
 
@@ -137,6 +141,8 @@ class DeletePlayerUseCase:
         self._uow = uow
 
     def execute(self, command: DeletePlayerCommand) -> None:
+        """Deletes a player or raises PLAYER_NOT_FOUND when id is absent."""
+
         with self._uow.transaction():
             deleted = self._players.delete(command.id)
         if not deleted:
@@ -156,6 +162,13 @@ class AssignPlayerTeamUseCase:
         self._uow = uow
 
     def execute(self, command: AssignPlayerTeamCommand) -> Player:
+        """Assigns player to team with explicit error-priority guarantees.
+
+        Error mapping precedence is preserved intentionally:
+        1) missing team -> TEAM_NOT_FOUND
+        2) missing player -> PLAYER_NOT_FOUND
+        """
+
         with self._uow.transaction():
             if not self._teams.exists(command.team_id):
                 raise PlayerError(code=TEAM_NOT_FOUND, message="Team not found")

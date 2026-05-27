@@ -81,7 +81,11 @@ class OperationConnection:
 
     @contextmanager
     def transaction(self):
-        """Starts/reuses transactional scope and propagates it via context var."""
+        """Starts/reuses transactional scope and propagates it via context var.
+
+        Invariant: repositories participating in the same use-case transaction
+        observe one shared psycopg connection.
+        """
 
         current = self._current_connection.get()
         if current is not None and not current.closed:
@@ -126,6 +130,8 @@ class PsycopgUnitOfWork(UnitOfWorkPort):
 
     @contextmanager
     def transaction(self):
+        """Delegates transaction ownership to the operation-scoped connection."""
+
         with self._connection.transaction():
             yield
 
@@ -166,6 +172,10 @@ def build_http_dependencies(
 
     All auth and player/team repositories share the same operation-scoped
     connection manager so multi-repository use cases can stay transactional.
+
+    Boundary ownership:
+    - This function wires concrete adapters only.
+    - HTTP route modules receive use-case interfaces, not persistence concerns.
     """
 
     conn = OperationConnection(database_url)

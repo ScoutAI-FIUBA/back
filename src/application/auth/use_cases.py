@@ -37,44 +37,60 @@ REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 
 @dataclass(frozen=True)
 class RegisterUserCommand:
+    """Registration payload accepted by ``RegisterUserUseCase``."""
+
     email: str
     password: str
 
 
 @dataclass(frozen=True)
 class LoginCommand:
+    """Credential payload used by ``LoginUseCase``."""
+
     email: str
     password: str
 
 
 @dataclass(frozen=True)
 class LoginResult:
+    """Auth response contract returned by login/refresh flows."""
+
     user: AuthIdentity
     tokens: TokenPair
 
 
 @dataclass(frozen=True)
 class RefreshSessionCommand:
+    """Refresh cookie payload used to rotate refresh sessions."""
+
     refresh_token: str
 
 
 @dataclass(frozen=True)
 class LogoutCommand:
+    """Logout payload carrying the presented refresh token."""
+
     refresh_token: str
 
 
 @dataclass(frozen=True)
 class GetCurrentUserQuery:
+    """Identity lookup query scoped to an authenticated user id."""
+
     user_id: str
 
 
 @dataclass(frozen=True)
 class DeleteCurrentUserCommand:
+    """Soft-delete request scoped to the authenticated user id."""
+
     user_id: str
 
 
 @dataclass(frozen=True)
 class HardDeleteUserCommand:
+    """Hard-delete request scoped to a concrete user id."""
+
     user_id: str
 
 
@@ -101,6 +117,13 @@ class RegisterUserUseCase:
         self._uow = uow
 
     def execute(self, command: RegisterUserCommand) -> AuthIdentity:
+        """Validates input and persists one new local user atomically.
+
+        Error mapping:
+        - malformed email/password -> AUTH_VALIDATION_ERROR
+        - duplicate normalized email -> AUTH_EMAIL_ALREADY_EXISTS
+        """
+
         try:
             email_normalized = Email(command.email).value
             plain_password = PlainPassword(command.password).value
@@ -346,6 +369,12 @@ class LogoutUseCase:
         self._uow = uow
 
     def execute(self, command: LogoutCommand) -> None:
+        """Revokes the presented refresh session when known.
+
+        Invariant: logout stays idempotent, so unknown or already-removed tokens
+        intentionally produce no error.
+        """
+
         token_hash = self._refresh_tokens.hash(command.refresh_token)
         session = self._refresh_sessions.get_by_token_hash(token_hash)
         if session is None:
@@ -364,6 +393,8 @@ class GetCurrentUserUseCase:
         self._users = users
 
     def execute(self, query: GetCurrentUserQuery) -> AuthIdentity:
+        """Returns current user identity or AUTH_UNAUTHORIZED when unavailable."""
+
         user = self._users.get_by_id(query.user_id)
         if user is None or user.deleted_at is not None:
             raise AuthError(code=AUTH_UNAUTHORIZED, message="User not found")
@@ -392,6 +423,8 @@ class DeleteCurrentUserUseCase:
         self._uow = uow
 
     def execute(self, command: DeleteCurrentUserCommand) -> None:
+        """Soft-deletes the account and revokes all refresh sessions atomically."""
+
         now = self._clock.now()
         with self._uow.transaction():
             deleted = self._users.soft_delete(command.user_id, now)
@@ -421,6 +454,8 @@ class HardDeleteUserUseCase:
         self._uow = uow
 
     def execute(self, command: HardDeleteUserCommand) -> None:
+        """Hard-deletes a user while revoking live refresh sessions first."""
+
         with self._uow.transaction():
             self._refresh_sessions.revoke_all_by_user_id(command.user_id, self._clock.now())
             self._users.hard_delete(command.user_id)

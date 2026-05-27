@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Players HTTP routes.
+
+This router owns transport concerns (payload/path validation and status mapping)
+and delegates business behavior to player application use cases.
+"""
+
 from datetime import date
 from http import HTTPStatus
 from uuid import UUID
@@ -72,6 +78,8 @@ def create_players_router(
 
     @router.post("", status_code=HTTPStatus.CREATED, response_model=None)
     def create_player(payload: PlayerPayload):
+        """Creates one player from validated payload fields."""
+
         try:
             player = create_player_use_case.execute(
                 CreatePlayerCommand(
@@ -89,6 +97,8 @@ def create_players_router(
 
     @router.get("", response_model=None)
     def list_players(team_id: UUID | None = None):
+        """Lists all players or filters by team when ``team_id`` is provided."""
+
         if team_id is None:
             players = list_players_use_case.execute()
         else:
@@ -97,6 +107,8 @@ def create_players_router(
 
     @router.put("/{player_id}", response_model=None)
     def update_player(player_id: UUID, payload: PlayerPayload):
+        """Updates one player and maps application errors to HTTP envelopes."""
+
         try:
             player = update_player_use_case.execute(
                 UpdatePlayerCommand(
@@ -115,6 +127,8 @@ def create_players_router(
 
     @router.delete("/{player_id}", response_model=None)
     def delete_player(player_id: UUID):
+        """Deletes one player and returns HTTP 204 on success."""
+
         try:
             delete_player_use_case.execute(DeletePlayerCommand(id=str(player_id)))
             return Response(status_code=HTTPStatus.NO_CONTENT)
@@ -123,6 +137,8 @@ def create_players_router(
 
     @router.put("/{player_id}/team/{team_id}", response_model=None)
     def assign_player_to_team(player_id: UUID, team_id: UUID):
+        """Assigns a player to a team using typed UUID boundary inputs."""
+
         try:
             player = assign_player_team_use_case.execute(
                 AssignPlayerTeamCommand(player_id=str(player_id), team_id=str(team_id))

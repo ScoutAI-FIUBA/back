@@ -54,6 +54,8 @@ class PostgresPlayerRepository:
         self._connection = connection
 
     def create(self, player: Player) -> Player:
+        """Inserts one player row and returns the stored aggregate state."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -93,6 +95,8 @@ class PostgresPlayerRepository:
         weight_kg: int,
         primary_position: str,
     ) -> Player | None:
+        """Updates mutable player fields and returns ``None`` when id is missing."""
+
         params = {
             "id": player_id,
             "first_name": first_name,
@@ -122,11 +126,18 @@ class PostgresPlayerRepository:
         return _row_to_player(row)
 
     def delete(self, player_id: str) -> bool:
+        """Permanently removes one player row.
+
+        Returns ``True`` only when a row was actually deleted.
+        """
+
         with self._connection.cursor() as cur:
             cur.execute("DELETE FROM players WHERE id = %(id)s", {"id": player_id})
             return cur.rowcount > 0
 
     def assign_team(self, *, player_id: str, team_id: str) -> Player | None:
+        """Assigns player to team and returns updated row or ``None`` when absent."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
