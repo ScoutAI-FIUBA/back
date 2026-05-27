@@ -52,6 +52,11 @@ class TestMainWiring(unittest.TestCase):
             "/players",
             "/players/{player_id}",
             "/players/{player_id}/team/{team_id}",
+            "/videos/upload/init",
+            "/videos/{video_id}/upload/complete",
+            "/videos/{video_id}/upload/abort",
+            "/videos",
+            "/videos/{video_id}",
             "/teams",
             "/teams/{team_id}",
         ):

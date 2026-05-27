@@ -6,6 +6,7 @@ from src.interfaces.http.bootstrap.dependencies import HttpDependencies
 from src.interfaces.http.routes.auth_router import create_auth_router
 from src.interfaces.http.routes.players_router import create_players_router
 from src.interfaces.http.routes.team_router import create_team_router
+from src.interfaces.http.routes.videos_router import create_videos_router
 
 
 def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
@@ -42,5 +43,16 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             update_player_use_case=deps.update_player_use_case,
             delete_player_use_case=deps.delete_player_use_case,
             assign_player_team_use_case=deps.assign_player_team_use_case,
+        )
+    )
+    app.include_router(
+        create_videos_router(
+            init_upload_use_case=deps.init_video_upload_use_case,
+            complete_upload_use_case=deps.complete_video_upload_use_case,
+            abort_upload_use_case=deps.abort_video_upload_use_case,
+            list_videos_use_case=deps.list_videos_use_case,
+            get_video_use_case=deps.get_video_use_case,
+            update_video_use_case=deps.update_video_use_case,
+            delete_video_use_case=deps.delete_video_use_case,
         )
     )

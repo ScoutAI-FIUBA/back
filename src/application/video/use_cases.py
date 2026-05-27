@@ -1,0 +1,259 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+
+from src.application.video.errors import (
+    PLAYER_TEAM_MISMATCH,
+    STORAGE_DELETE_FAILED,
+    UPLOAD_NOT_INITIALIZED,
+    VIDEO_NOT_FOUND,
+    VIDEO_NOT_READY,
+    VIDEO_STORAGE_KEY_CONFLICT,
+    VideoError,
+)
+from src.application.video.ports import (
+    IdGeneratorPort,
+    TeamAccessPort,
+    UnitOfWorkPort,
+    VideoRepositoryPort,
+    VideoStorageKeyConflictError,
+    VideoStoragePort,
+)
+from src.domain.video.entities import Video, VideoStatus
+
+
+@dataclass(frozen=True)
+class InitVideoUploadCommand:
+    user_id: str
+    team_id: str
+    title: str
+    description: str | None
+    content_type: str | None
+    part_count: int
+
+
+@dataclass(frozen=True)
+class CompleteVideoUploadCommand:
+    user_id: str
+    team_id: str
+    video_id: str
+    mime_type: str | None
+    size_bytes: int | None
+    duration_ms: int | None
+    multipart_upload_id: str
+    parts: list[dict[str, str | int]]
+
+
+@dataclass(frozen=True)
+class AbortVideoUploadCommand:
+    user_id: str
+    team_id: str
+    video_id: str
+    multipart_upload_id: str
+
+
+@dataclass(frozen=True)
+class UpdateVideoCommand:
+    user_id: str
+    team_id: str
+    video_id: str
+    title: str | None
+    description: str | None
+    player_ids: list[str] | None
+
+
+@dataclass(frozen=True)
+class DeleteVideoCommand:
+    user_id: str
+    team_id: str
+    video_id: str
+
+
+class InitVideoUploadUseCase:
+    def __init__(
+        self,
+        *,
+        videos: VideoRepositoryPort,
+        storage: VideoStoragePort,
+        team_access: TeamAccessPort,
+        ids: IdGeneratorPort,
+        uow: UnitOfWorkPort,
+    ) -> None:
+        self._videos = videos
+        self._storage = storage
+        self._team_access = team_access
+        self._ids = ids
+        self._uow = uow
+
+    def execute(self, command: InitVideoUploadCommand) -> tuple[Video, str, list[dict[str, object]]]:
+        # Access is enforced before creating metadata to avoid dangling rows.
+        self._team_access.assert_access(user_id=command.user_id, team_id=command.team_id)
+        upload_expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+        storage_key = f"videos/{command.team_id}/{self._ids.new_id()}"
+        multipart_upload_id = self._storage.init_multipart_upload(key=storage_key, content_type=command.content_type)
+        try:
+            with self._uow.transaction():
+                video = self._videos.create_pending(
+                    video_id=self._ids.new_id(),
+                    team_id=command.team_id,
+                    owner_user_id=command.user_id,
+                    storage_key=storage_key,
+                    title=command.title,
+                    description=command.description,
+                    upload_expires_at=upload_expires_at,
+                    multipart_upload_id=multipart_upload_id,
+                )
+        except VideoStorageKeyConflictError as exc:
+            raise VideoError(code=VIDEO_STORAGE_KEY_CONFLICT, message="Video storage key conflict") from exc
+        parts: list[dict[str, object]] = []
+        for part_number in range(1, command.part_count + 1):
+            part_url = self._storage.generate_presigned_upload_part_url(
+                key=video.storage_key,
+                upload_id=multipart_upload_id,
+                part_number=part_number,
+            )
+            parts.append({"part_number": part_number, "presigned_part_url": part_url})
+        return video, multipart_upload_id, parts
+
+
+class CompleteVideoUploadUseCase:
+    def __init__(
+        self,
+        *,
+        videos: VideoRepositoryPort,
+        storage: VideoStoragePort,
+        team_access: TeamAccessPort,
+        uow: UnitOfWorkPort,
+    ) -> None:
+        self._videos = videos
+        self._storage = storage
+        self._team_access = team_access
+        self._uow = uow
+
+    def execute(self, command: CompleteVideoUploadCommand) -> Video:
+        self._team_access.assert_access(user_id=command.user_id, team_id=command.team_id)
+        # Load metadata first so multipart completion uses the canonical storage key.
+        current = self._videos.get_by_id(video_id=command.video_id, team_id=command.team_id)
+        if current is None:
+            raise VideoError(code=UPLOAD_NOT_INITIALIZED, message="Upload not initialized")
+        etag = self._storage.complete_multipart_upload(
+            key=current.storage_key,
+            upload_id=command.multipart_upload_id,
+            parts=command.parts,
+        )
+        with self._uow.transaction():
+            video = self._videos.complete_upload(
+                video_id=command.video_id,
+                team_id=command.team_id,
+                mime_type=command.mime_type,
+                size_bytes=command.size_bytes,
+                duration_ms=command.duration_ms,
+                etag=etag,
+                multipart_upload_id=command.multipart_upload_id,
+            )
+        if video is None:
+            raise VideoError(code=UPLOAD_NOT_INITIALIZED, message="Upload not initialized")
+        return video
+
+
+class AbortVideoUploadUseCase:
+    def __init__(self, *, videos: VideoRepositoryPort, storage: VideoStoragePort, team_access: TeamAccessPort, uow: UnitOfWorkPort) -> None:
+        self._videos = videos
+        self._storage = storage
+        self._team_access = team_access
+        self._uow = uow
+
+    def execute(self, command: AbortVideoUploadCommand) -> None:
+        self._team_access.assert_access(user_id=command.user_id, team_id=command.team_id)
+        video = self._videos.get_by_id(video_id=command.video_id, team_id=command.team_id)
+        if video is None:
+            raise VideoError(code=UPLOAD_NOT_INITIALIZED, message="Upload not initialized")
+        self._storage.abort_multipart_upload(key=video.storage_key, upload_id=command.multipart_upload_id)
+        with self._uow.transaction():
+            self._videos.fail_pending_upload(
+                video_id=command.video_id,
+                team_id=command.team_id,
+                multipart_upload_id=command.multipart_upload_id,
+            )
+
+
+class ListVideosUseCase:
+    def __init__(self, *, videos: VideoRepositoryPort, team_access: TeamAccessPort) -> None:
+        self._videos = videos
+        self._team_access = team_access
+
+    def execute(self, *, user_id: str, team_id: str, status: str | None = None) -> list[Video]:
+        self._team_access.assert_access(user_id=user_id, team_id=team_id)
+        return self._videos.list_by_team(team_id=team_id, status=status)
+
+
+class GetVideoUseCase:
+    def __init__(self, *, videos: VideoRepositoryPort, storage: VideoStoragePort, team_access: TeamAccessPort) -> None:
+        self._videos = videos
+        self._storage = storage
+        self._team_access = team_access
+
+    def execute(self, *, user_id: str, team_id: str, video_id: str) -> tuple[Video, str]:
+        self._team_access.assert_access(user_id=user_id, team_id=team_id)
+        video = self._videos.get_by_id(video_id=video_id, team_id=team_id)
+        if video is None:
+            raise VideoError(code=VIDEO_NOT_FOUND, message="Video not found")
+        if video.status != VideoStatus.READY:
+            raise VideoError(code=VIDEO_NOT_READY, message="Video not ready")
+        return video, self._storage.generate_presigned_url(video.storage_key)
+
+
+class UpdateVideoUseCase:
+    def __init__(self, *, videos: VideoRepositoryPort, team_access: TeamAccessPort, uow: UnitOfWorkPort) -> None:
+        self._videos = videos
+        self._team_access = team_access
+        self._uow = uow
+
+    def execute(self, command: UpdateVideoCommand) -> Video:
+        self._team_access.assert_access(user_id=command.user_id, team_id=command.team_id)
+        with self._uow.transaction():
+            video = self._videos.update_metadata(
+                video_id=command.video_id,
+                team_id=command.team_id,
+                title=command.title,
+                description=command.description,
+            )
+            if video is None:
+                raise VideoError(code=VIDEO_NOT_FOUND, message="Video not found")
+            if command.player_ids is not None:
+                if not self._videos.players_belong_to_team(team_id=command.team_id, player_ids=command.player_ids):
+                    raise VideoError(code=PLAYER_TEAM_MISMATCH, message="Player team mismatch")
+                self._videos.replace_players(video_id=command.video_id, player_ids=command.player_ids)
+        return video
+
+
+class DeleteVideoUseCase:
+    def __init__(
+        self,
+        *,
+        videos: VideoRepositoryPort,
+        storage: VideoStoragePort,
+        team_access: TeamAccessPort,
+        uow: UnitOfWorkPort,
+    ) -> None:
+        self._videos = videos
+        self._storage = storage
+        self._team_access = team_access
+        self._uow = uow
+
+    def execute(self, command: DeleteVideoCommand) -> dict[str, object]:
+        self._team_access.assert_access(user_id=command.user_id, team_id=command.team_id)
+        with self._uow.transaction():
+            video = self._videos.soft_delete(video_id=command.video_id, team_id=command.team_id)
+        if video is None:
+            raise VideoError(code=VIDEO_NOT_FOUND, message="Video not found")
+        try:
+            self._storage.delete_video(video.storage_key)
+            return {"deleted": True, "compensation_pending": False}
+        except Exception as exc:
+            raise VideoError(
+                code=STORAGE_DELETE_FAILED,
+                message="Storage deletion failed",
+                details={"reason": str(exc)},
+            ) from exc
