@@ -9,6 +9,12 @@ from src.interfaces.http.routes.team_router import create_team_router
 
 
 def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
+    """Registers all route groups with fully constructed use-case dependencies.
+
+    This function is the HTTP boundary assembly point; route factories remain
+    free of container knowledge and only receive explicit collaborators.
+    """
+
     app.include_router(
         create_auth_router(
             register_use_case=deps.register_user_use_case,

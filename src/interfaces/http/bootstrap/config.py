@@ -9,6 +9,8 @@ DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS = 5
 
 
 def require_env(name: str) -> str:
+    """Reads a required environment variable and fails fast when missing/blank."""
+
     value = os.getenv(name)
     if value is None or value.strip() == "":
         raise RuntimeError(f"Missing required environment variable: {name}")
@@ -16,6 +18,12 @@ def require_env(name: str) -> str:
 
 
 def db_health_connect_timeout_seconds() -> int:
+    """Returns DB health-check timeout with safe fallback parsing.
+
+    Invalid or blank values fall back to the default. Non-positive explicit values
+    are rejected to avoid silently accepting broken production configuration.
+    """
+
     raw = os.getenv("DB_HEALTH_CONNECT_TIMEOUT_SECONDS")
     if raw is None or raw.strip() == "":
         return DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS
@@ -29,6 +37,12 @@ def db_health_connect_timeout_seconds() -> int:
 
 
 def parse_cors_origins() -> list[str]:
+    """Parses ``CORS_ORIGINS`` with explicit wildcard safety rules.
+
+    ``*`` is accepted only as a standalone value so production config cannot
+    accidentally combine unrestricted and restricted origins.
+    """
+
     raw = os.getenv("CORS_ORIGINS", "").strip()
     if raw == "":
         return []
@@ -44,6 +58,12 @@ def parse_cors_origins() -> list[str]:
 
 
 def configure_cors(app: FastAPI) -> None:
+    """Applies CORS policy based on ``APP_ENV`` and ``CORS_ORIGINS``.
+
+    Development is intentionally permissive for localhost origins only. Non-dev
+    environments must provide explicit origins or opt into a standalone wildcard.
+    """
+
     app_env = os.getenv("APP_ENV", "development").strip().lower()
 
     if app_env == "development":

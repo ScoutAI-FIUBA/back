@@ -24,6 +24,12 @@ from src.application.players.use_cases import (
 
 
 class PlayerPayload(BaseModel):
+    """Validated player payload used for create/update operations.
+
+    Field bounds here are the HTTP contract; deeper business rules still execute in
+    application use cases and may return ``PlayerError``.
+    """
+
     first_name: str = Field(min_length=1, max_length=120)
     last_name: str = Field(min_length=1, max_length=120)
     birth_date: date
@@ -33,6 +39,8 @@ class PlayerPayload(BaseModel):
 
 
 def _to_player_response(player) -> dict[str, object]:
+    """Serializes player entities to a stable JSON-facing shape."""
+
     return {
         "id": player.id,
         "first_name": player.first_name,
@@ -54,6 +62,12 @@ def create_players_router(
     delete_player_use_case: DeletePlayerUseCase,
     assign_player_team_use_case: AssignPlayerTeamUseCase,
 ) -> APIRouter:
+    """Creates players HTTP endpoints and maps domain failures to HTTP responses.
+
+    UUID path/query params are accepted as typed values at the HTTP boundary and
+    converted to strings before invoking use cases.
+    """
+
     router = APIRouter(prefix="/players", tags=["players"])
 
     @router.post("", status_code=HTTPStatus.CREATED, response_model=None)

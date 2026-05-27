@@ -18,6 +18,8 @@ from src.application.team.use_cases import (
 
 
 class CreateTeamRequest(BaseModel):
+    """Request body contract for team creation."""
+
     name: str = Field(min_length=1)
     short_name: str = Field(min_length=1)
     city: str = Field(min_length=1)
@@ -25,6 +27,8 @@ class CreateTeamRequest(BaseModel):
 
 
 class UpdateTeamRequest(BaseModel):
+    """Request body contract for team updates."""
+
     name: str = Field(min_length=1)
     short_name: str = Field(min_length=1)
     city: str = Field(min_length=1)
@@ -32,6 +36,8 @@ class UpdateTeamRequest(BaseModel):
 
 
 def _to_payload(team) -> dict[str, str]:
+    """Converts team entities into the route response payload shape."""
+
     return {
         "id": team.id,
         "name": team.name,
@@ -49,6 +55,12 @@ def create_team_router(
     update_team_use_case: UpdateTeamUseCase,
     delete_team_use_case: DeleteTeamUseCase,
 ) -> APIRouter:
+    """Creates team endpoints and defines HTTP-level not-found semantics.
+
+    Use cases may return ``None``/``False`` for missing teams; this boundary maps
+    those outcomes to ``404 Team not found`` for API consistency.
+    """
+
     router = APIRouter(prefix="/teams", tags=["teams"])
 
     @router.post("", response_model=None, status_code=HTTPStatus.CREATED)

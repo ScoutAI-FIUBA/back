@@ -16,6 +16,13 @@ from src.interfaces.http.middleware.auth_middleware import create_require_authen
 
 
 def create_app() -> FastAPI:
+    """Builds the HTTP application and wires boundary contracts.
+
+    Startup fails fast when required auth/database configuration is missing, then
+    wires dependencies, routers, authentication middleware, error handlers, and
+    health endpoints in a single composition root.
+    """
+
     app = FastAPI(title="ScoutAI Backend", version="0.1.0")
 
     configure_cors(app)

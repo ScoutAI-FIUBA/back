@@ -23,7 +23,18 @@ def create_require_authenticated_user_middleware(
     resolve_subject: Callable[[str], str],
     public_routes: frozenset[str] = PUBLIC_ROUTES,
 ) -> Callable[[Request, Callable[[Request], Awaitable]], Awaitable]:
+    """Builds auth guard middleware for protected HTTP routes.
+
+    Contract:
+    - Skips auth for ``OPTIONS`` and known public endpoints.
+    - Requires ``Authorization: Bearer <token>`` everywhere else.
+    - Stores the resolved authenticated subject in ``request.state.user_id``.
+    - Converts domain auth failures to the shared auth error envelope.
+    """
+
     async def require_authenticated_user(request: Request, call_next):
+        """Enforces bearer auth and propagates user identity through request state."""
+
         if request.method == "OPTIONS" or request.url.path in public_routes:
             return await call_next(request)
 
