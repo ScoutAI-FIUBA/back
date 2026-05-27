@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Application-layer auth use cases and command/query contracts.
+
+These classes orchestrate domain operations through ports and keep HTTP/database
+concerns outside the application layer.
+"""
+
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -31,48 +37,70 @@ REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 
 @dataclass(frozen=True)
 class RegisterUserCommand:
+    """Registration payload accepted by ``RegisterUserUseCase``."""
+
     email: str
     password: str
 
 
 @dataclass(frozen=True)
 class LoginCommand:
+    """Credential payload used by ``LoginUseCase``."""
+
     email: str
     password: str
 
 
 @dataclass(frozen=True)
 class LoginResult:
+    """Auth response contract returned by login/refresh flows."""
+
     user: AuthIdentity
     tokens: TokenPair
 
 
 @dataclass(frozen=True)
 class RefreshSessionCommand:
+    """Refresh cookie payload used to rotate refresh sessions."""
+
     refresh_token: str
 
 
 @dataclass(frozen=True)
 class LogoutCommand:
+    """Logout payload carrying the presented refresh token."""
+
     refresh_token: str
 
 
 @dataclass(frozen=True)
 class GetCurrentUserQuery:
+    """Identity lookup query scoped to an authenticated user id."""
+
     user_id: str
 
 
 @dataclass(frozen=True)
 class DeleteCurrentUserCommand:
+    """Soft-delete request scoped to the authenticated user id."""
+
     user_id: str
 
 
 @dataclass(frozen=True)
 class HardDeleteUserCommand:
+    """Hard-delete request scoped to a concrete user id."""
+
     user_id: str
 
 
 class RegisterUserUseCase:
+    """Registers local credentials and persists the user in one transaction.
+
+    Uniqueness is enforced by checking email existence inside the same unit of
+    work used for insert.
+    """
+
     def __init__(
         self,
         *,
@@ -89,6 +117,13 @@ class RegisterUserUseCase:
         self._uow = uow
 
     def execute(self, command: RegisterUserCommand) -> AuthIdentity:
+        """Validates input and persists one new local user atomically.
+
+        Error mapping:
+        - malformed email/password -> AUTH_VALIDATION_ERROR
+        - duplicate normalized email -> AUTH_EMAIL_ALREADY_EXISTS
+        """
+
         try:
             email_normalized = Email(command.email).value
             plain_password = PlainPassword(command.password).value
@@ -128,6 +163,8 @@ class RegisterUserUseCase:
 
 
 class LoginUseCase:
+    """Authenticates a non-deleted user and creates a refresh-session family root."""
+
     def __init__(
         self,
         *,
@@ -154,6 +191,13 @@ class LoginUseCase:
         self._refresh_ttl = refresh_token_ttl_seconds
 
     def execute(self, command: LoginCommand) -> LoginResult:
+        """Returns issued tokens and identity for valid credentials.
+
+        Raises:
+            AuthError: AUTH_INVALID_CREDENTIALS when user is missing, soft-deleted,
+                or password verification fails.
+        """
+
         email_normalized = Email(command.email).value
         user = self._users.get_by_email(email_normalized)
         if (
@@ -208,6 +252,8 @@ class LoginUseCase:
 
 
 class RefreshSessionUseCase:
+    """Rotates refresh tokens with one-time-use and family-revocation semantics."""
+
     def __init__(
         self,
         *,
@@ -232,6 +278,17 @@ class RefreshSessionUseCase:
         self._refresh_ttl = refresh_token_ttl_seconds
 
     def execute(self, command: RefreshSessionCommand) -> LoginResult:
+        """Rotates one active refresh session and issues a new token pair.
+
+        If a known-but-inactive token is presented, marks reuse on that session
+        and revokes the full family in the same transaction.
+
+        Raises:
+            AuthError: AUTH_REFRESH_REUSED when reuse is detected or rotation loses
+                a revoke/replace race; AUTH_TOKEN_INVALID for unknown tokens;
+                AUTH_UNAUTHORIZED when the session user no longer exists.
+        """
+
         now = self._clock.now()
         presented_hash = self._refresh_tokens.hash(command.refresh_token)
         session = self._refresh_sessions.get_active_by_token_hash(presented_hash, now)
@@ -293,6 +350,11 @@ class RefreshSessionUseCase:
 
 
 class LogoutUseCase:
+    """Best-effort refresh-session revocation.
+
+    Missing/unknown tokens are treated as no-op to keep logout idempotent.
+    """
+
     def __init__(
         self,
         *,
@@ -307,6 +369,12 @@ class LogoutUseCase:
         self._uow = uow
 
     def execute(self, command: LogoutCommand) -> None:
+        """Revokes the presented refresh session when known.
+
+        Invariant: logout stays idempotent, so unknown or already-removed tokens
+        intentionally produce no error.
+        """
+
         token_hash = self._refresh_tokens.hash(command.refresh_token)
         session = self._refresh_sessions.get_by_token_hash(token_hash)
         if session is None:
@@ -316,10 +384,17 @@ class LogoutUseCase:
 
 
 class GetCurrentUserUseCase:
+    """Loads current identity for an authenticated principal.
+
+    Soft-deleted users are treated as unauthorized.
+    """
+
     def __init__(self, *, users: UserRepositoryPort) -> None:
         self._users = users
 
     def execute(self, query: GetCurrentUserQuery) -> AuthIdentity:
+        """Returns current user identity or AUTH_UNAUTHORIZED when unavailable."""
+
         user = self._users.get_by_id(query.user_id)
         if user is None or user.deleted_at is not None:
             raise AuthError(code=AUTH_UNAUTHORIZED, message="User not found")
@@ -332,6 +407,8 @@ class GetCurrentUserUseCase:
 
 
 class DeleteCurrentUserUseCase:
+    """Soft-deletes the user and revokes all active refresh sessions atomically."""
+
     def __init__(
         self,
         *,
@@ -346,6 +423,8 @@ class DeleteCurrentUserUseCase:
         self._uow = uow
 
     def execute(self, command: DeleteCurrentUserCommand) -> None:
+        """Soft-deletes the account and revokes all refresh sessions atomically."""
+
         now = self._clock.now()
         with self._uow.transaction():
             deleted = self._users.soft_delete(command.user_id, now)
@@ -355,6 +434,12 @@ class DeleteCurrentUserUseCase:
 
 
 class HardDeleteUserUseCase:
+    """Hard-deletes the user and revokes active refresh sessions atomically.
+
+    Revocation happens before delete inside the same transaction to avoid leaving
+    active sessions for a removed account.
+    """
+
     def __init__(
         self,
         *,
@@ -369,6 +454,8 @@ class HardDeleteUserUseCase:
         self._uow = uow
 
     def execute(self, command: HardDeleteUserCommand) -> None:
+        """Hard-deletes a user while revoking live refresh sessions first."""
+
         with self._uow.transaction():
             self._refresh_sessions.revoke_all_by_user_id(command.user_id, self._clock.now())
             self._users.hard_delete(command.user_id)

@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""PostgreSQL repository adapters for auth aggregates.
+
+This module maps low-level row dictionaries into domain entities and keeps SQL
+details localized to the infrastructure layer.
+"""
+
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Protocol
@@ -10,16 +16,22 @@ from src.domain.auth.entities import RefreshSession, User
 
 
 class CursorLike(Protocol):
+    """Minimal DB-API cursor surface required by these adapters."""
+
     def execute(self, query: str, params: dict[str, Any] | tuple[Any, ...] | None = None) -> Any: ...
 
     def fetchone(self) -> dict[str, Any] | tuple[Any, ...] | None: ...
 
 
 class ConnectionLike(Protocol):
+    """Connection surface needed to open repository cursors."""
+
     def cursor(self, *args: Any, **kwargs: Any) -> CursorLike: ...
 
 
 def _row_to_user(row: dict[str, Any] | None) -> User | None:
+    """Converts a raw users row to a domain User entity."""
+
     if row is None:
         return None
     return User(
@@ -36,6 +48,8 @@ def _row_to_user(row: dict[str, Any] | None) -> User | None:
 
 
 def _row_to_refresh_session(row: dict[str, Any] | None) -> RefreshSession | None:
+    """Converts a raw refresh-session row to a domain RefreshSession entity."""
+
     if row is None:
         return None
     return RefreshSession(
@@ -55,6 +69,12 @@ def _row_to_refresh_session(row: dict[str, Any] | None) -> RefreshSession | None
 
 
 class PostgresUserRepository:
+    """User persistence adapter with explicit soft/hard delete semantics.
+
+    `soft_delete` is idempotent (`deleted_at IS NULL` guard) and returns the
+    mutated row only on the first delete.
+    """
+
     def __init__(self, *, connection: ConnectionLike) -> None:
         self._connection = connection
 
@@ -77,6 +97,11 @@ class PostgresUserRepository:
         return _row_to_user(row) or user
 
     def get_by_email(self, email_normalized: str) -> User | None:
+        """Returns matching user regardless of deletion state.
+
+        Policy note: filtering soft-deleted users is an application-layer concern.
+        """
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT * FROM users WHERE email_normalized = %(email_normalized)s",
@@ -85,6 +110,8 @@ class PostgresUserRepository:
             return _row_to_user(cur.fetchone())
 
     def get_by_id(self, user_id: str) -> User | None:
+        """Returns user by id without applying authorization semantics."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute("SELECT * FROM users WHERE id = %(id)s", {"id": user_id})
             return _row_to_user(cur.fetchone())
@@ -103,16 +130,29 @@ class PostgresUserRepository:
             return _row_to_user(cur.fetchone())
 
     def hard_delete(self, user_id: str) -> bool:
+        """Permanently removes a user row.
+
+        Returns ``True`` only when a row was physically deleted.
+        """
+
         with self._connection.cursor() as cur:
             cur.execute("DELETE FROM users WHERE id = %(id)s", {"id": user_id})
             return cur.rowcount > 0
 
 
 class PostgresRefreshSessionRepository:
+    """Refresh-session adapter enforcing one-time rotation primitives.
+
+    Methods expose low-level lifecycle operations; atomic composition is handled
+    by the calling unit of work.
+    """
+
     def __init__(self, *, connection: ConnectionLike) -> None:
         self._connection = connection
 
     def create(self, session: RefreshSession) -> RefreshSession:
+        """Persists one refresh session row and returns the stored representation."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -133,6 +173,11 @@ class PostgresRefreshSessionRepository:
         return _row_to_refresh_session(row) or session
 
     def get_active_by_token_hash(self, token_hash: str, now: datetime) -> RefreshSession | None:
+        """Looks up only currently active refresh sessions.
+
+        Active means ``revoked_at IS NULL`` and ``expires_at > now``.
+        """
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -146,6 +191,8 @@ class PostgresRefreshSessionRepository:
             return _row_to_refresh_session(cur.fetchone())
 
     def get_by_token_hash(self, token_hash: str) -> RefreshSession | None:
+        """Looks up any refresh session by hash, including revoked/expired rows."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 "SELECT * FROM auth_refresh_sessions WHERE token_hash = %(token_hash)s",
@@ -154,6 +201,8 @@ class PostgresRefreshSessionRepository:
             return _row_to_refresh_session(cur.fetchone())
 
     def revoke(self, session_id: str, revoked_at: datetime) -> None:
+        """Idempotently revokes one session if still active."""
+
         with self._connection.cursor() as cur:
             cur.execute(
                 """
@@ -171,6 +220,13 @@ class PostgresRefreshSessionRepository:
         new_session: RefreshSession,
         revoked_at: datetime,
     ) -> RefreshSession | None:
+        """Revokes old session then inserts replacement within one transaction.
+
+        Returns:
+            RefreshSession | None: Inserted replacement, or ``None`` when the
+            old session was already revoked (reuse or concurrent rotation).
+        """
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -201,6 +257,11 @@ class PostgresRefreshSessionRepository:
         return _row_to_refresh_session(row) or new_session
 
     def revoke_family(self, family_id: str, revoked_at: datetime) -> int:
+        """Revokes every active session in one token family.
+
+        Returns number of rows transitioned to revoked state.
+        """
+
         with self._connection.cursor() as cur:
             cur.execute(
                 """
@@ -213,6 +274,8 @@ class PostgresRefreshSessionRepository:
             return cur.rowcount
 
     def mark_reuse_detected(self, session_id: str, detected_at: datetime) -> None:
+        """Records reuse timestamp for incident/audit analysis."""
+
         with self._connection.cursor() as cur:
             cur.execute(
                 """
@@ -224,6 +287,11 @@ class PostgresRefreshSessionRepository:
             )
 
     def revoke_all_by_user_id(self, user_id: str, revoked_at: datetime) -> int:
+        """Revokes all active sessions for one user id.
+
+        Used by account-delete flows to invalidate every outstanding refresh token.
+        """
+
         with self._connection.cursor() as cur:
             cur.execute(
                 """

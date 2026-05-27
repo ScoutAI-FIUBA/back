@@ -9,8 +9,17 @@ from src.application.auth.errors import AUTH_VALIDATION_ERROR, AuthError, auth_e
 
 
 def register_error_handlers(app: FastAPI) -> None:
+    """Registers HTTP-layer error mapping handlers.
+
+    Keeps FastAPI's default validation envelope for every route except ``/auth*``.
+    Auth endpoints are intentionally normalized to the auth error contract so clients
+    can always rely on ``AuthError.to_envelope()`` for authentication flows.
+    """
+
     @app.exception_handler(RequestValidationError)
     async def handle_request_validation_error(request: Request, exc: RequestValidationError):
+        """Maps request validation failures to the expected error envelope by boundary."""
+
         if request.url.path.startswith("/auth"):
             auth_error = AuthError(
                 code=AUTH_VALIDATION_ERROR,

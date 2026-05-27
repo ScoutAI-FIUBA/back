@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Auth HTTP routes.
+
+This router translates transport concerns (headers/cookies/status codes) into
+application command/query objects and maps domain errors to HTTP responses.
+"""
+
 from collections.abc import Callable
 from http import HTTPStatus
 
@@ -25,16 +31,27 @@ from src.application.auth.use_cases import (
 
 
 class RegisterRequest(BaseModel):
+    """HTTP payload contract for user registration."""
+
     email: str = Field(min_length=3)
     password: str = Field(min_length=8)
 
 
 class LoginRequest(BaseModel):
+    """HTTP payload contract for credential login."""
+
     email: str = Field(min_length=3)
     password: str = Field(min_length=1)
 
 
 def _extract_bearer_token(authorization_header: str | None) -> str:
+    """Parses ``Authorization: Bearer <token>`` using auth-domain error codes.
+
+    Raises:
+        AuthError: AUTH_UNAUTHORIZED for missing header; AUTH_TOKEN_INVALID for
+            malformed scheme or empty bearer token.
+    """
+
     if not authorization_header:
         raise AuthError(code="AUTH_UNAUTHORIZED", message="Missing authorization header")
     prefix = "Bearer "
@@ -56,10 +73,19 @@ def create_auth_router(
     delete_current_user_use_case: DeleteCurrentUserUseCase,
     access_token_resolver: Callable[[str], str],
 ) -> APIRouter:
+    """Creates auth endpoints and maps application auth errors to HTTP envelopes.
+
+    Security semantics:
+    - Refresh tokens are only transported via secure, httpOnly cookies.
+    - Access tokens are only accepted from ``Authorization: Bearer`` headers.
+    """
+
     router = APIRouter(prefix="/auth", tags=["auth"])
 
     @router.post("/register", response_model=None)
     def register(payload: RegisterRequest):
+        """Creates user credentials and returns auth identity envelope."""
+
         try:
             user = register_use_case.execute(
                 RegisterUserCommand(email=payload.email, password=payload.password)
@@ -77,6 +103,12 @@ def create_auth_router(
 
     @router.post("/login", response_model=None)
     def login(payload: LoginRequest, response: Response):
+        """Authenticates credentials and issues access+refresh tokens.
+
+        Boundary ownership: refresh token is delivered only via secure cookie;
+        access token is returned in response body for bearer-header usage.
+        """
+
         try:
             result = login_use_case.execute(LoginCommand(email=payload.email, password=payload.password))
             response.set_cookie(
@@ -104,6 +136,8 @@ def create_auth_router(
 
     @router.post("/refresh", response_model=None)
     def refresh(response: Response, refresh_token: str | None = Cookie(default=None)):
+        """Rotates refresh token and returns a fresh access token pair."""
+
         try:
             if not refresh_token:
                 raise AuthError(code="AUTH_UNAUTHORIZED", message="Missing refresh cookie")
@@ -133,6 +167,8 @@ def create_auth_router(
 
     @router.post("/logout", response_model=None)
     def logout(response: Response, refresh_token: str | None = Cookie(default=None)):
+        """Revokes current refresh session when present and clears auth cookie."""
+
         try:
             if refresh_token:
                 logout_use_case.execute(LogoutCommand(refresh_token=refresh_token))
@@ -144,6 +180,8 @@ def create_auth_router(
 
     @router.get("/me", response_model=None)
     def me(authorization: str | None = Header(default=None)):
+        """Resolves bearer token to current auth identity."""
+
         try:
             token = _extract_bearer_token(authorization)
             user_id = access_token_resolver(token)
@@ -161,6 +199,8 @@ def create_auth_router(
 
     @router.delete("/me", response_model=None)
     def delete_me(authorization: str | None = Header(default=None)):
+        """Soft-deletes current user account and invalidates refresh sessions."""
+
         try:
             token = _extract_bearer_token(authorization)
             user_id = access_token_resolver(token)

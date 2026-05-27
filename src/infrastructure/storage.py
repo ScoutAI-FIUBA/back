@@ -34,6 +34,12 @@ class R2Settings:
 
     @classmethod
     def from_env(cls) -> "R2Settings | None":
+        """Build settings from environment or return ``None`` when incomplete.
+
+        This allows application startup in environments where object storage is
+        intentionally disabled.
+        """
+
         required = {
             "R2_ACCESS_KEY_ID": os.getenv("R2_ACCESS_KEY_ID"),
             "R2_SECRET_ACCESS_KEY": os.getenv("R2_SECRET_ACCESS_KEY"),
@@ -51,6 +57,8 @@ class R2Settings:
 
 
 def _build_client(settings: R2Settings) -> BaseClient:
+    """Create an S3-compatible client configured for Cloudflare R2."""
+
     return boto3.client(
         "s3",
         endpoint_url=settings.endpoint_url,
@@ -78,6 +86,8 @@ def _file_size(file: BinaryIO) -> int | None:
 
 
 def _rewind(file: BinaryIO) -> None:
+    """Best-effort rewind to stream start; non-seekable streams are ignored."""
+
     seek = getattr(file, "seek", None)
     if seek is None:
         return
@@ -96,9 +106,13 @@ class R2Storage:
 
     @property
     def is_configured(self) -> bool:
+        """Whether required credentials were provided at construction time."""
+
         return self._settings is not None
 
     def _require_client(self) -> tuple[BaseClient, R2Settings]:
+        """Return initialized client/settings or raise when storage is disabled."""
+
         if self._settings is None:
             raise StorageNotConfiguredError(
                 "R2 storage is not configured. Set R2_ACCESS_KEY_ID, "
@@ -134,6 +148,8 @@ class R2Storage:
     def _upload_simple(
         self, file: BinaryIO, key: str, content_type: str | None
     ) -> str:
+        """Upload via one S3 PUT request (no multipart orchestration)."""
+
         client, settings = self._require_client()
         extra_args = {"ContentType": content_type} if content_type else {}
         client.upload_fileobj(file, settings.bucket_name, key, ExtraArgs=extra_args)
@@ -142,6 +158,8 @@ class R2Storage:
     def _upload_multipart(
         self, file: BinaryIO, key: str, content_type: str | None
     ) -> str:
+        """Upload using explicit multipart flow with abort-on-failure safety."""
+
         client, settings = self._require_client()
         create_kwargs: dict[str, str] = {
             "Bucket": settings.bucket_name,
@@ -202,5 +220,7 @@ class R2Storage:
         )
 
     def delete_video(self, key: str) -> None:
+        """Delete object by key; missing keys are tolerated by S3 semantics."""
+
         client, settings = self._require_client()
         client.delete_object(Bucket=settings.bucket_name, Key=key)

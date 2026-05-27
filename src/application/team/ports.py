@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Team application ports.
+
+These abstractions describe team persistence, identity generation, and time
+sources consumed by team use cases.
+"""
+
 from abc import ABC, abstractmethod
 from datetime import datetime
 
@@ -7,6 +13,8 @@ from src.domain.team.entities import Team
 
 
 class TeamRepositoryPort(ABC):
+    """Persistence contract for team aggregates."""
+
     @abstractmethod
     def create(self, team: Team) -> Team:
         raise NotImplementedError
@@ -17,6 +25,8 @@ class TeamRepositoryPort(ABC):
 
     @abstractmethod
     def update(self, team_id: str, *, name: str, short_name: str, city: str, country: str) -> Team | None:
+        """Returns updated team or `None` when `team_id` is not found."""
+
         raise NotImplementedError
 
     @abstractmethod
@@ -29,12 +39,16 @@ class TeamRepositoryPort(ABC):
 
 
 class TeamClockPort(ABC):
+    """Time source contract used to create deterministic timestamps."""
+
     @abstractmethod
     def now(self) -> datetime:
         raise NotImplementedError
 
 
 class TeamIdGeneratorPort(ABC):
+    """Identifier generator contract for team entities."""
+
     @abstractmethod
     def new_id(self) -> str:
         raise NotImplementedError

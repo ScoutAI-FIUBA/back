@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+"""PostgreSQL repository adapter for player aggregates.
+
+Keeps SQL operations and row-to-entity mapping isolated from application logic.
+"""
+
 from dataclasses import asdict
 from datetime import date
 from typing import Any, Protocol
@@ -10,6 +15,8 @@ from src.domain.players.entities import Player
 
 
 class CursorLike(Protocol):
+    """Minimal DB-API cursor surface required by this adapter."""
+
     def execute(self, query: str, params: dict[str, Any] | tuple[Any, ...] | None = None) -> Any: ...
 
     def fetchone(self) -> dict[str, Any] | tuple[Any, ...] | None: ...
@@ -18,10 +25,14 @@ class CursorLike(Protocol):
 
 
 class ConnectionLike(Protocol):
+    """Connection surface needed to open repository cursors."""
+
     def cursor(self, *args: Any, **kwargs: Any) -> CursorLike: ...
 
 
 def _row_to_player(row: dict[str, Any] | None) -> Player | None:
+    """Converts a raw players row to a domain Player entity."""
+
     if row is None:
         return None
     return Player(
@@ -37,10 +48,14 @@ def _row_to_player(row: dict[str, Any] | None) -> Player | None:
 
 
 class PostgresPlayerRepository:
+    """Player persistence adapter with deterministic list ordering guarantees."""
+
     def __init__(self, *, connection: ConnectionLike) -> None:
         self._connection = connection
 
     def create(self, player: Player) -> Player:
+        """Inserts one player row and returns the stored aggregate state."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -57,6 +72,8 @@ class PostgresPlayerRepository:
         return _row_to_player(row) or player
 
     def list_all(self) -> list[Player]:
+        """Returns all players ordered by last_name, first_name for stable results."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute("SELECT * FROM players ORDER BY last_name ASC, first_name ASC")
             rows = cur.fetchall()
@@ -78,6 +95,8 @@ class PostgresPlayerRepository:
         weight_kg: int,
         primary_position: str,
     ) -> Player | None:
+        """Updates mutable player fields and returns ``None`` when id is missing."""
+
         params = {
             "id": player_id,
             "first_name": first_name,
@@ -107,11 +126,18 @@ class PostgresPlayerRepository:
         return _row_to_player(row)
 
     def delete(self, player_id: str) -> bool:
+        """Permanently removes one player row.
+
+        Returns ``True`` only when a row was actually deleted.
+        """
+
         with self._connection.cursor() as cur:
             cur.execute("DELETE FROM players WHERE id = %(id)s", {"id": player_id})
             return cur.rowcount > 0
 
     def assign_team(self, *, player_id: str, team_id: str) -> Player | None:
+        """Assigns player to team and returns updated row or ``None`` when absent."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -126,6 +152,8 @@ class PostgresPlayerRepository:
         return _row_to_player(row)
 
     def list_by_team(self, team_id: str) -> list[Player]:
+        """Returns team players ordered by last_name, first_name for stable results."""
+
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
