@@ -38,6 +38,17 @@ from src.application.team.use_cases import (
     ListTeamsUseCase,
     UpdateTeamUseCase,
 )
+from src.application.video.errors import TEAM_NOT_FOUND, VideoError
+from src.application.video.ports import TeamAccessPort
+from src.application.video.use_cases import (
+    AbortVideoUploadUseCase,
+    CompleteVideoUploadUseCase,
+    DeleteVideoUseCase,
+    GetVideoUseCase,
+    InitVideoUploadUseCase,
+    ListVideosUseCase,
+    UpdateVideoUseCase,
+)
 from src.infrastructure.auth.argon2_password_hasher import Argon2PasswordHasher
 from src.infrastructure.auth.jwt_access_token_resolver import JWTAccessTokenResolver
 from src.infrastructure.auth.jwt_token_issuer import JWTTokenIssuer
@@ -48,6 +59,24 @@ from src.infrastructure.auth.postgres_repositories import (
 )
 from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
 from src.infrastructure.team.postgres_repository import PostgresTeamRepository
+from src.infrastructure.storage import R2Storage
+from src.infrastructure.video.postgres_video_repository import PostgresVideoRepository
+
+
+class TeamExistsAccessAdapter(TeamAccessPort):
+    """Temporary team access adapter based on team existence.
+
+    This preserves the TeamAccessPort contract while membership table is pending.
+    """
+
+    def __init__(self, *, teams: PostgresTeamRepository) -> None:
+        self._teams = teams
+
+    def assert_access(self, *, user_id: str, team_id: str) -> None:
+        del user_id
+        if not self._teams.exists(team_id):
+            # Missing teams are treated as 404 to match the upload-init contract.
+            raise VideoError(code=TEAM_NOT_FOUND, message="Team not found")
 
 
 class OperationConnection:
@@ -157,6 +186,13 @@ class HttpDependencies:
     update_player_use_case: UpdatePlayerUseCase
     delete_player_use_case: DeletePlayerUseCase
     assign_player_team_use_case: AssignPlayerTeamUseCase
+    init_video_upload_use_case: InitVideoUploadUseCase
+    complete_video_upload_use_case: CompleteVideoUploadUseCase
+    abort_video_upload_use_case: AbortVideoUploadUseCase
+    list_videos_use_case: ListVideosUseCase
+    get_video_use_case: GetVideoUseCase
+    update_video_use_case: UpdateVideoUseCase
+    delete_video_use_case: DeleteVideoUseCase
     access_token_resolver: JWTAccessTokenResolver
 
 
@@ -183,6 +219,9 @@ def build_http_dependencies(
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)
     players_repo = PostgresPlayerRepository(connection=conn)
     teams_repo = PostgresTeamRepository(connection=conn)
+    videos_repo = PostgresVideoRepository(connection=conn)
+    video_storage = R2Storage()
+    team_access = TeamExistsAccessAdapter(teams=teams_repo)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
     refresh_tokens = OpaqueRefreshTokenService(secret=refresh_secret)
@@ -253,6 +292,42 @@ def build_http_dependencies(
         assign_player_team_use_case=AssignPlayerTeamUseCase(
             players=players_repo,
             teams=teams_repo,
+            uow=uow,
+        ),
+        init_video_upload_use_case=InitVideoUploadUseCase(
+            videos=videos_repo,
+            storage=video_storage,
+            team_access=team_access,
+            ids=ids,
+            uow=uow,
+        ),
+        complete_video_upload_use_case=CompleteVideoUploadUseCase(
+            videos=videos_repo,
+            storage=video_storage,
+            team_access=team_access,
+            uow=uow,
+        ),
+        abort_video_upload_use_case=AbortVideoUploadUseCase(
+            videos=videos_repo,
+            storage=video_storage,
+            team_access=team_access,
+            uow=uow,
+        ),
+        list_videos_use_case=ListVideosUseCase(videos=videos_repo, team_access=team_access),
+        get_video_use_case=GetVideoUseCase(
+            videos=videos_repo,
+            storage=video_storage,
+            team_access=team_access,
+        ),
+        update_video_use_case=UpdateVideoUseCase(
+            videos=videos_repo,
+            team_access=team_access,
+            uow=uow,
+        ),
+        delete_video_use_case=DeleteVideoUseCase(
+            videos=videos_repo,
+            storage=video_storage,
+            team_access=team_access,
             uow=uow,
         ),
         access_token_resolver=access_token_resolver,

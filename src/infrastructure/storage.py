@@ -219,6 +219,63 @@ class R2Storage:
             ExpiresIn=expires_in,
         )
 
+    def init_multipart_upload(self, *, key: str, content_type: str | None = None) -> str:
+        """Create multipart upload session and return the provider upload_id."""
+
+        client, settings = self._require_client()
+        payload: dict[str, str] = {"Bucket": settings.bucket_name, "Key": key}
+        if content_type:
+            payload["ContentType"] = content_type
+        created = client.create_multipart_upload(**payload)
+        return str(created["UploadId"])
+
+    def generate_presigned_upload_part_url(
+        self,
+        *,
+        key: str,
+        upload_id: str,
+        part_number: int,
+        expires_in: int = 900,
+    ) -> str:
+        """Generate one presigned URL scoped to a multipart part upload."""
+
+        client, settings = self._require_client()
+        return client.generate_presigned_url(
+            "upload_part",
+            Params={
+                "Bucket": settings.bucket_name,
+                "Key": key,
+                "UploadId": upload_id,
+                "PartNumber": part_number,
+            },
+            ExpiresIn=expires_in,
+        )
+
+    def complete_multipart_upload(
+        self,
+        *,
+        key: str,
+        upload_id: str,
+        parts: list[dict[str, str | int]],
+    ) -> str | None:
+        """Finalize multipart upload and return object ETag when provided."""
+
+        client, settings = self._require_client()
+        result = client.complete_multipart_upload(
+            Bucket=settings.bucket_name,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+        etag = result.get("ETag") if isinstance(result, dict) else None
+        return str(etag) if etag is not None else None
+
+    def abort_multipart_upload(self, *, key: str, upload_id: str) -> None:
+        """Abort multipart upload session, discarding uploaded parts."""
+
+        client, settings = self._require_client()
+        client.abort_multipart_upload(Bucket=settings.bucket_name, Key=key, UploadId=upload_id)
+
     def delete_video(self, key: str) -> None:
         """Delete object by key; missing keys are tolerated by S3 semantics."""
 
