@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import os
+from typing import Literal
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+AuthCookieSameSite = Literal["strict", "lax", "none"]
 
 DEFAULT_DB_HEALTH_CONNECT_TIMEOUT_SECONDS = 5
 
@@ -34,6 +37,22 @@ def db_health_connect_timeout_seconds() -> int:
     if value <= 0:
         raise RuntimeError("DB_HEALTH_CONNECT_TIMEOUT_SECONDS must be a positive integer")
     return value
+
+
+def auth_refresh_cookie_samesite() -> AuthCookieSameSite:
+    """Returns SameSite for the refresh cookie.
+
+    Local dev uses ``strict`` (front and back share localhost). Production deploys
+    front and back on different origins, so refresh needs ``none`` + ``Secure``.
+    """
+
+    app_env = os.getenv("APP_ENV", "development").strip().lower()
+    raw = os.getenv("AUTH_COOKIE_SAMESITE", "").strip().lower()
+    if raw == "":
+        return "none" if app_env != "development" else "strict"
+    if raw not in ("strict", "lax", "none"):
+        raise RuntimeError("AUTH_COOKIE_SAMESITE must be one of: strict, lax, none")
+    return raw  # type: ignore[return-value]
 
 
 def parse_cors_origins() -> list[str]:
