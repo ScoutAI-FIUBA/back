@@ -28,6 +28,7 @@ from src.application.auth.use_cases import (
     RegisterUserCommand,
     RegisterUserUseCase,
 )
+from src.interfaces.http.bootstrap.config import AuthCookieSameSite, auth_refresh_cookie_samesite
 
 
 class RegisterRequest(BaseModel):
@@ -63,6 +64,34 @@ def _extract_bearer_token(authorization_header: str | None) -> str:
     return token
 
 
+def _set_refresh_cookie(
+    response: Response,
+    *,
+    refresh_token: str,
+    samesite: AuthCookieSameSite,
+    max_age: int = 7 * 24 * 60 * 60,
+) -> None:
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=True,
+        samesite=samesite,
+        max_age=max_age,
+        path="/auth",
+    )
+
+
+def _clear_refresh_cookie(response: Response, *, samesite: AuthCookieSameSite) -> None:
+    response.delete_cookie(
+        key="refresh_token",
+        path="/auth",
+        secure=True,
+        httponly=True,
+        samesite=samesite,
+    )
+
+
 def create_auth_router(
     *,
     register_use_case: RegisterUserUseCase,
@@ -72,6 +101,7 @@ def create_auth_router(
     current_user_use_case: GetCurrentUserUseCase,
     delete_current_user_use_case: DeleteCurrentUserUseCase,
     access_token_resolver: Callable[[str], str],
+    refresh_cookie_samesite: AuthCookieSameSite | None = None,
 ) -> APIRouter:
     """Creates auth endpoints and maps application auth errors to HTTP envelopes.
 
@@ -80,6 +110,7 @@ def create_auth_router(
     - Access tokens are only accepted from ``Authorization: Bearer`` headers.
     """
 
+    cookie_samesite = refresh_cookie_samesite or auth_refresh_cookie_samesite()
     router = APIRouter(prefix="/auth", tags=["auth"])
 
     @router.post("/register", response_model=None)
@@ -111,14 +142,10 @@ def create_auth_router(
 
         try:
             result = login_use_case.execute(LoginCommand(email=payload.email, password=payload.password))
-            response.set_cookie(
-                key="refresh_token",
-                value=result.tokens.refresh_token,
-                httponly=True,
-                secure=True,
-                samesite="strict",
-                max_age=7 * 24 * 60 * 60,
-                path="/auth",
+            _set_refresh_cookie(
+                response,
+                refresh_token=result.tokens.refresh_token,
+                samesite=cookie_samesite,
             )
             return {
                 "access_token": result.tokens.access_token,
@@ -142,14 +169,10 @@ def create_auth_router(
             if not refresh_token:
                 raise AuthError(code="AUTH_UNAUTHORIZED", message="Missing refresh cookie")
             result = refresh_use_case.execute(RefreshSessionCommand(refresh_token=refresh_token))
-            response.set_cookie(
-                key="refresh_token",
-                value=result.tokens.refresh_token,
-                httponly=True,
-                secure=True,
-                samesite="strict",
-                max_age=7 * 24 * 60 * 60,
-                path="/auth",
+            _set_refresh_cookie(
+                response,
+                refresh_token=result.tokens.refresh_token,
+                samesite=cookie_samesite,
             )
             return {
                 "access_token": result.tokens.access_token,
@@ -172,7 +195,7 @@ def create_auth_router(
         try:
             if refresh_token:
                 logout_use_case.execute(LogoutCommand(refresh_token=refresh_token))
-            response.delete_cookie(key="refresh_token", path="/auth", secure=True, httponly=True, samesite="strict")
+            _clear_refresh_cookie(response, samesite=cookie_samesite)
             response.status_code = HTTPStatus.NO_CONTENT
             return response
         except AuthError as exc:
