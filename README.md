@@ -78,6 +78,20 @@ Note: CORS preflight `OPTIONS` requests are also allowed without auth.
   - `country` (TEXT, not null)
   - `created_at` (TIMESTAMPTZ, not null)
 
+### Clip collections
+
+| Method | Path | Auth required | Purpose |
+| --- | --- | --- | --- |
+| `POST` | `/videos/{video_id}/collections` | Yes | Create a private clip collection under one owned video. |
+| `GET` | `/videos/{video_id}/collections` | Yes | List private collections for one owned video. |
+| `GET` | `/videos/{video_id}/collections/{collection_id}` | Yes | Get collection metadata plus ordered clips. |
+| `POST` | `/videos/{video_id}/collections/{collection_id}/clips` | Yes | Add one clip metadata record. |
+| `POST` | `/videos/{video_id}/collections/{collection_id}/clips/batch` | Yes | Add multiple clip metadata records in one request. |
+| `DELETE` | `/videos/{video_id}/collections/{collection_id}/clips/{item_id}` | Yes | Delete one clip metadata record. |
+
+- Clip collections contract and examples: `specs/api/clip-collections.md`.
+- Clip persistence uses dedicated tables from `src/infrastructure/clip_collections/migrations/001_clip_collections_foundation.sql`.
+
 ### Players
 
 | Method | Path | Auth required | Purpose |

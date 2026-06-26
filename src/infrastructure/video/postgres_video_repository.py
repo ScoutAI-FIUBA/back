@@ -7,6 +7,7 @@ import psycopg
 from psycopg.rows import dict_row
 
 from src.application.video.ports import VideoStorageKeyConflictError
+from src.application.clip_collections.ports import OwnedVideoContext
 from src.domain.video.entities import Video, VideoStatus
 
 
@@ -223,3 +224,24 @@ class PostgresVideoRepository:
                 },
             )
             return _row_to_video(cur.fetchone())
+
+    def get_video_context(self, *, video_id: str) -> OwnedVideoContext | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT v.id AS video_id, v.team_id, v.owner_user_id
+                FROM videos v
+                INNER JOIN teams t ON t.id = v.team_id
+                WHERE v.id = %(video_id)s::uuid
+                  AND v.deleted_at IS NULL
+                """,
+                {"video_id": video_id},
+            )
+            row = cur.fetchone()
+        if row is None:
+            return None
+        return OwnedVideoContext(
+            video_id=str(row["video_id"]),
+            team_id=str(row["team_id"]),
+            owner_user_id=row["owner_user_id"],
+        )
