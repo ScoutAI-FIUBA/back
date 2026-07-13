@@ -24,6 +24,14 @@ from src.application.auth.use_cases import (
     RefreshSessionUseCase,
     RegisterUserUseCase,
 )
+from src.application.clip_collections.use_cases import (
+    AddClipBatchUseCase,
+    AddClipUseCase,
+    CreateClipCollectionUseCase,
+    DeleteClipCollectionItemUseCase,
+    GetClipCollectionDetailUseCase,
+    ListClipCollectionsUseCase,
+)
 from src.application.players.use_cases import (
     AssignPlayerTeamUseCase,
     CreatePlayerUseCase,
@@ -57,6 +65,7 @@ from src.infrastructure.auth.postgres_repositories import (
     PostgresRefreshSessionRepository,
     PostgresUserRepository,
 )
+from src.infrastructure.clip_collections.postgres_repository import PostgresClipCollectionRepository
 from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
 from src.infrastructure.team.postgres_repository import PostgresTeamRepository
 from src.infrastructure.storage import R2Storage
@@ -193,6 +202,12 @@ class HttpDependencies:
     get_video_use_case: GetVideoUseCase
     update_video_use_case: UpdateVideoUseCase
     delete_video_use_case: DeleteVideoUseCase
+    create_clip_collection_use_case: CreateClipCollectionUseCase
+    list_clip_collections_use_case: ListClipCollectionsUseCase
+    get_clip_collection_detail_use_case: GetClipCollectionDetailUseCase
+    add_clip_use_case: AddClipUseCase
+    add_clip_batch_use_case: AddClipBatchUseCase
+    delete_clip_collection_item_use_case: DeleteClipCollectionItemUseCase
     access_token_resolver: JWTAccessTokenResolver
 
 
@@ -220,6 +235,7 @@ def build_http_dependencies(
     players_repo = PostgresPlayerRepository(connection=conn)
     teams_repo = PostgresTeamRepository(connection=conn)
     videos_repo = PostgresVideoRepository(connection=conn)
+    clip_collections_repo = PostgresClipCollectionRepository(connection=conn)
     video_storage = R2Storage()
     team_access = TeamExistsAccessAdapter(teams=teams_repo)
     password_hasher = Argon2PasswordHasher()
@@ -233,6 +249,12 @@ def build_http_dependencies(
     clock = SystemClock()
     ids = UUIDIds()
     uow = PsycopgUnitOfWork(conn)
+    add_clip_batch_use_case = AddClipBatchUseCase(
+        collections=clip_collections_repo,
+        videos=videos_repo,
+        ids=ids,
+        uow=uow,
+    )
 
     return HttpDependencies(
         register_user_use_case=RegisterUserUseCase(
@@ -328,6 +350,27 @@ def build_http_dependencies(
             videos=videos_repo,
             storage=video_storage,
             team_access=team_access,
+            uow=uow,
+        ),
+        create_clip_collection_use_case=CreateClipCollectionUseCase(
+            collections=clip_collections_repo,
+            videos=videos_repo,
+            ids=ids,
+            uow=uow,
+        ),
+        list_clip_collections_use_case=ListClipCollectionsUseCase(
+            collections=clip_collections_repo,
+            videos=videos_repo,
+        ),
+        get_clip_collection_detail_use_case=GetClipCollectionDetailUseCase(
+            collections=clip_collections_repo,
+            videos=videos_repo,
+        ),
+        add_clip_batch_use_case=add_clip_batch_use_case,
+        add_clip_use_case=AddClipUseCase(batch_use_case=add_clip_batch_use_case),
+        delete_clip_collection_item_use_case=DeleteClipCollectionItemUseCase(
+            collections=clip_collections_repo,
+            videos=videos_repo,
             uow=uow,
         ),
         access_token_resolver=access_token_resolver,

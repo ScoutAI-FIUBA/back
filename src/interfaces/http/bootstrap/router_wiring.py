@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from src.interfaces.http.bootstrap.dependencies import HttpDependencies
+from src.interfaces.http.routes.clip_collections_router import create_clip_collections_router
 from src.interfaces.http.routes.auth_router import create_auth_router
 from src.interfaces.http.routes.players_router import create_players_router
 from src.interfaces.http.routes.team_router import create_team_router
@@ -54,5 +55,15 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             get_video_use_case=deps.get_video_use_case,
             update_video_use_case=deps.update_video_use_case,
             delete_video_use_case=deps.delete_video_use_case,
+        )
+    )
+    app.include_router(
+        create_clip_collections_router(
+            create_collection_use_case=deps.create_clip_collection_use_case,
+            list_collections_use_case=deps.list_clip_collections_use_case,
+            get_collection_detail_use_case=deps.get_clip_collection_detail_use_case,
+            add_clip_use_case=deps.add_clip_use_case,
+            add_clip_batch_use_case=deps.add_clip_batch_use_case,
+            delete_item_use_case=deps.delete_clip_collection_item_use_case,
         )
     )
