@@ -29,6 +29,7 @@ from src.application.clip_collections.use_cases import (
     AddClipUseCase,
     CreateClipCollectionUseCase,
     DeleteClipCollectionItemUseCase,
+    ExportClipItemUseCase,
     GetClipCollectionDetailUseCase,
     ListClipCollectionsUseCase,
 )
@@ -65,6 +66,7 @@ from src.infrastructure.auth.postgres_repositories import (
     PostgresRefreshSessionRepository,
     PostgresUserRepository,
 )
+from src.infrastructure.clip_collections.ffmpeg_clip_exporter import FFmpegClipExporter
 from src.infrastructure.clip_collections.postgres_repository import PostgresClipCollectionRepository
 from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
 from src.infrastructure.team.postgres_repository import PostgresTeamRepository
@@ -208,6 +210,7 @@ class HttpDependencies:
     add_clip_use_case: AddClipUseCase
     add_clip_batch_use_case: AddClipBatchUseCase
     delete_clip_collection_item_use_case: DeleteClipCollectionItemUseCase
+    export_clip_item_use_case: ExportClipItemUseCase
     access_token_resolver: JWTAccessTokenResolver
 
 
@@ -237,6 +240,7 @@ def build_http_dependencies(
     videos_repo = PostgresVideoRepository(connection=conn)
     clip_collections_repo = PostgresClipCollectionRepository(connection=conn)
     video_storage = R2Storage()
+    clip_exporter = FFmpegClipExporter(storage=video_storage)
     team_access = TeamExistsAccessAdapter(teams=teams_repo)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
@@ -372,6 +376,11 @@ def build_http_dependencies(
             collections=clip_collections_repo,
             videos=videos_repo,
             uow=uow,
+        ),
+        export_clip_item_use_case=ExportClipItemUseCase(
+            collections=clip_collections_repo,
+            videos=videos_repo,
+            exporter=clip_exporter,
         ),
         access_token_resolver=access_token_resolver,
     )

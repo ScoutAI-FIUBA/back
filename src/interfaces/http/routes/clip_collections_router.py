@@ -17,6 +17,8 @@ from src.application.clip_collections.use_cases import (
     CreateClipCollectionUseCase,
     DeleteClipCollectionItemCommand,
     DeleteClipCollectionItemUseCase,
+    ExportClipItemCommand,
+    ExportClipItemUseCase,
     GetClipCollectionDetailUseCase,
     ListClipCollectionsUseCase,
 )
@@ -28,8 +30,8 @@ class CreateCollectionPayload(BaseModel):
 
 
 class ClipPayload(BaseModel):
-    filename: str = Field(min_length=1, max_length=512)
-    cloudflare_url: str = Field(min_length=1, max_length=2048)
+    start_ms: int
+    end_ms: int
 
 
 class AddClipBatchPayload(BaseModel):
@@ -53,9 +55,8 @@ def _item_to_dict(item) -> dict[str, object]:
     return {
         "id": item.id,
         "collection_id": item.collection_id,
-        "filename": item.filename,
-        "storage_key": item.storage_key,
-        "cloudflare_url": item.cloudflare_url,
+        "start_ms": item.start_ms,
+        "end_ms": item.end_ms,
         "position": item.position,
         "created_at": item.created_at.isoformat(),
     }
@@ -69,6 +70,7 @@ def create_clip_collections_router(
     add_clip_use_case: AddClipUseCase,
     add_clip_batch_use_case: AddClipBatchUseCase,
     delete_item_use_case: DeleteClipCollectionItemUseCase,
+    export_clip_item_use_case: ExportClipItemUseCase,
 ) -> APIRouter:
     router = APIRouter(prefix="/videos/{video_id}/collections", tags=["clip-collections"])
 
@@ -118,8 +120,8 @@ def create_clip_collections_router(
                     user_id=str(request.state.user_id),
                     video_id=str(video_id),
                     collection_id=str(collection_id),
-                    filename=payload.filename,
-                    cloudflare_url=payload.cloudflare_url,
+                    start_ms=payload.start_ms,
+                    end_ms=payload.end_ms,
                 )
             )
             return {"item": _item_to_dict(item)}
@@ -139,8 +141,8 @@ def create_clip_collections_router(
                             user_id=str(request.state.user_id),
                             video_id=str(video_id),
                             collection_id=str(collection_id),
-                            filename=clip.filename,
-                            cloudflare_url=clip.cloudflare_url,
+                            start_ms=clip.start_ms,
+                            end_ms=clip.end_ms,
                         )
                         for clip in payload.clips
                     ],
@@ -162,6 +164,21 @@ def create_clip_collections_router(
                 )
             )
             return Response(status_code=HTTPStatus.NO_CONTENT)
+        except ClipCollectionError as exc:
+            return JSONResponse(status_code=clip_collection_error_http_status(exc.code), content=exc.to_envelope())
+
+    @router.post("/{collection_id}/clips/{item_id}/export", response_model=None)
+    def export_clip(video_id: UUID, collection_id: UUID, item_id: UUID, request: Request):
+        try:
+            download_url = export_clip_item_use_case.execute(
+                ExportClipItemCommand(
+                    user_id=str(request.state.user_id),
+                    video_id=str(video_id),
+                    collection_id=str(collection_id),
+                    item_id=str(item_id),
+                )
+            )
+            return {"download_url": download_url}
         except ClipCollectionError as exc:
             return JSONResponse(status_code=clip_collection_error_http_status(exc.code), content=exc.to_envelope())
 

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import BinaryIO
 
 import boto3
+from botocore.exceptions import ClientError
 from botocore.client import BaseClient, Config
 
 # Files above this size use explicit S3 multipart upload to R2.
@@ -218,6 +219,29 @@ class R2Storage:
             Params={"Bucket": settings.bucket_name, "Key": key},
             ExpiresIn=expires_in,
         )
+
+    def object_exists(self, key: str) -> bool:
+        """Return True when the object exists in the configured bucket."""
+
+        client, settings = self._require_client()
+        try:
+            client.head_object(Bucket=settings.bucket_name, Key=key)
+            return True
+        except ClientError as exc:
+            error_code = str(exc.response.get("Error", {}).get("Code", ""))
+            if error_code in {"404", "NoSuchKey", "NotFound"}:
+                return False
+            raise
+
+    def upload_file(self, file: BinaryIO, key: str, content_type: str | None = None) -> str:
+        """Upload an arbitrary file stream to R2 and return the object key."""
+
+        return self._upload_simple(file, key, content_type)
+
+    def generate_download_url(self, key: str, expires_in: int = 3600) -> str:
+        """Alias used by adapters that expose download-oriented semantics."""
+
+        return self.generate_presigned_url(key, expires_in=expires_in)
 
     def init_multipart_upload(self, *, key: str, content_type: str | None = None) -> str:
         """Create multipart upload session and return the provider upload_id."""
