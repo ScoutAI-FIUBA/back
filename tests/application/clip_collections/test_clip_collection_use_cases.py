@@ -4,7 +4,15 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import unittest
 
-from src.application.clip_collections.errors import CLIP_COLLECTION_NOT_FOUND, FORBIDDEN_TEAM_ACCESS, ClipCollectionError
+from src.application.clip_collections.errors import (
+    CLIP_EXPORT_FAILED,
+    CLIP_COLLECTION_ITEM_NOT_FOUND,
+    CLIP_COLLECTION_NOT_FOUND,
+    FORBIDDEN_TEAM_ACCESS,
+    INVALID_CLIP_RANGE,
+    VIDEO_NOT_FOUND,
+    ClipCollectionError,
+)
 from src.application.clip_collections.ports import OwnedVideoContext
 from src.application.clip_collections.use_cases import (
     AddClipBatchCommand,
@@ -15,6 +23,8 @@ from src.application.clip_collections.use_cases import (
     CreateClipCollectionUseCase,
     DeleteClipCollectionItemCommand,
     DeleteClipCollectionItemUseCase,
+    ExportClipItemCommand,
+    ExportClipItemUseCase,
     GetClipCollectionDetailUseCase,
 )
 from src.domain.clip_collections.entities import ClipCollection, ClipCollectionItem
@@ -38,9 +48,8 @@ def _item(item_id: str, position: int = 1) -> ClipCollectionItem:
     return ClipCollectionItem(
         id=item_id,
         collection_id="collection-1",
-        filename="goal.mp4",
-        storage_key=f"key/{item_id}",
-        cloudflare_url=f"https://cdn.local/{item_id}.mp4",
+        start_ms=5_000,
+        end_ms=10_000,
         position=position,
         created_at=datetime.now(timezone.utc),
     )
@@ -85,9 +94,8 @@ class _CollectionsRepo:
             ClipCollectionItem(
                 id=item.item_id,
                 collection_id=collection_id,
-                filename=item.filename,
-                storage_key=item.storage_key,
-                cloudflare_url=item.cloudflare_url,
+                start_ms=item.start_ms,
+                end_ms=item.end_ms,
                 position=len(stored) + index + 1,
                 created_at=datetime.now(timezone.utc),
             )
@@ -100,6 +108,13 @@ class _CollectionsRepo:
         del owner_user_id
         return list(self.items.get(collection_id, []))
 
+    def get_item(self, *, item_id: str, collection_id: str, owner_user_id: str):
+        del owner_user_id
+        for item in self.items.get(collection_id, []):
+            if item.id == item_id:
+                return item
+        return None
+
     def delete_item(self, *, item_id: str, collection_id: str, owner_user_id: str) -> bool:
         del owner_user_id
         existing = self.items.get(collection_id, [])
@@ -110,8 +125,14 @@ class _CollectionsRepo:
 
 
 class _Videos:
-    def __init__(self, *, owner_user_id: str = "user-1") -> None:
-        self.context = OwnedVideoContext(video_id="video-1", team_id="team-1", owner_user_id=owner_user_id)
+    def __init__(self, *, owner_user_id: str = "user-1", duration_ms: int | None = 60_000, storage_key: str = "videos/source.mp4") -> None:
+        self.context = OwnedVideoContext(
+            video_id="video-1",
+            team_id="team-1",
+            owner_user_id=owner_user_id,
+            duration_ms=duration_ms,
+            storage_key=storage_key,
+        )
 
     def get_video_context(self, *, video_id: str) -> OwnedVideoContext | None:
         return self.context if video_id == self.context.video_id else None
@@ -132,8 +153,27 @@ class _Uow:
         yield
 
 
+class _Exporter:
+    def __init__(self, *, exists: bool = False, should_fail: bool = False) -> None:
+        self.exists = exists
+        self.should_fail = should_fail
+        self.calls: list[tuple[str, str, int, int]] = []
+
+    def export_exists(self, *, export_key: str) -> bool:
+        self.last_exists_key = export_key
+        return self.exists
+
+    def export_clip(self, *, source_key: str, export_key: str, start_ms: int, end_ms: int) -> None:
+        if self.should_fail:
+            raise RuntimeError("ffmpeg failed")
+        self.calls.append((source_key, export_key, start_ms, end_ms))
+
+    def generate_download_url(self, *, export_key: str, expires_in: int = 3600) -> str:
+        return f"https://download.local/{export_key}?exp={expires_in}"
+
+
 class TestClipCollectionUseCases(unittest.TestCase):
-    def test_create_and_add_batch_builds_hierarchical_storage_keys(self) -> None:
+    def test_create_and_add_batch_persists_timestamp_ranges_in_order(self) -> None:
         repo = _CollectionsRepo()
         create_use_case = CreateClipCollectionUseCase(collections=repo, videos=_Videos(), ids=_Ids(), uow=_Uow())
         collection = create_use_case.execute(
@@ -151,24 +191,23 @@ class TestClipCollectionUseCases(unittest.TestCase):
                         user_id="user-1",
                         video_id="video-1",
                         collection_id=collection.id,
-                        filename="goal 1.mp4",
-                        cloudflare_url="https://cdn.local/goal-1.mp4",
+                        start_ms=5_000,
+                        end_ms=10_000,
                     ),
                     AddClipCommand(
                         user_id="user-1",
                         video_id="video-1",
                         collection_id=collection.id,
-                        filename="../goal-2.mov",
-                        cloudflare_url="https://cdn.local/goal-2.mov",
+                        start_ms=10_000,
+                        end_ms=15_000,
                     ),
                 ],
             )
         )
 
         self.assertEqual(len(items), 2)
-        self.assertIn("user/user-1/team/team-1/video/video-1/collection/", items[0].storage_key)
-        self.assertTrue(items[0].storage_key.endswith("-goal-1.mp4"))
-        self.assertTrue(items[1].storage_key.endswith("-goal-2.mov"))
+        self.assertEqual((items[0].start_ms, items[0].end_ms), (5_000, 10_000))
+        self.assertEqual((items[1].start_ms, items[1].end_ms), (10_000, 15_000))
         self.assertEqual([item.position for item in items], [1, 2])
 
     def test_get_detail_and_delete_missing_item_maps_domain_errors(self) -> None:
@@ -204,8 +243,8 @@ class TestClipCollectionUseCases(unittest.TestCase):
                     user_id="user-1",
                     video_id="video-1",
                     collection_id="collection-1",
-                    filename="goal.mp4",
-                    cloudflare_url="https://cdn.local/goal.mp4",
+                    start_ms=1_000,
+                    end_ms=5_000,
                 )
             )
         self.assertEqual(forbidden_ctx.exception.code, FORBIDDEN_TEAM_ACCESS)
@@ -232,12 +271,164 @@ class TestClipCollectionUseCases(unittest.TestCase):
                     user_id="user-1",
                     video_id="video-1",
                     collection_id="collection-1",
-                    filename="goal.mp4",
-                    cloudflare_url="https://cdn.local/goal.mp4",
+                    start_ms=1_000,
+                    end_ms=5_000,
                 )
             )
 
         self.assertEqual(ctx.exception.code, CLIP_COLLECTION_NOT_FOUND)
+
+    def test_add_clip_rejects_invalid_ranges_atomically(self) -> None:
+        repo = _CollectionsRepo()
+        repo.collections["collection-1"] = _collection()
+        use_case = AddClipBatchUseCase(collections=repo, videos=_Videos(), ids=_Ids(), uow=_Uow())
+
+        for start_ms, end_ms in ((-1, 100), (10_000, 10_000), (0, 30_001), (55_000, 60_001)):
+            with self.assertRaises(ClipCollectionError) as ctx:
+                use_case.execute(
+                    AddClipBatchCommand(
+                        user_id="user-1",
+                        video_id="video-1",
+                        collection_id="collection-1",
+                        clips=[
+                            AddClipCommand(
+                                user_id="user-1",
+                                video_id="video-1",
+                                collection_id="collection-1",
+                                start_ms=start_ms,
+                                end_ms=end_ms,
+                            )
+                        ],
+                    )
+                )
+            self.assertEqual(ctx.exception.code, INVALID_CLIP_RANGE)
+
+        self.assertEqual(repo.items.get("collection-1", []), [])
+
+    def test_add_clip_skips_duration_upper_bound_when_video_duration_is_null(self) -> None:
+        repo = _CollectionsRepo()
+        repo.collections["collection-1"] = _collection()
+        use_case = AddClipUseCase(batch_use_case=AddClipBatchUseCase(collections=repo, videos=_Videos(duration_ms=None), ids=_Ids(), uow=_Uow()))
+
+        item = use_case.execute(
+            AddClipCommand(
+                user_id="user-1",
+                video_id="video-1",
+                collection_id="collection-1",
+                start_ms=50_000,
+                end_ms=60_000,
+            )
+        )
+
+        self.assertEqual((item.start_ms, item.end_ms), (50_000, 60_000))
+
+    def test_export_clip_uses_cache_hit_without_regeneration(self) -> None:
+        repo = _CollectionsRepo()
+        repo.collections["collection-1"] = _collection()
+        repo.items["collection-1"] = [_item("item-1")]
+        exporter = _Exporter(exists=True)
+
+        download_url = ExportClipItemUseCase(collections=repo, videos=_Videos(), exporter=exporter).execute(
+            ExportClipItemCommand(
+                user_id="user-1",
+                video_id="video-1",
+                collection_id="collection-1",
+                item_id="item-1",
+            )
+        )
+
+        self.assertEqual(download_url, "https://download.local/exports/item-1.mp4?exp=3600")
+        self.assertEqual(exporter.calls, [])
+
+    def test_export_clip_generates_on_cache_miss(self) -> None:
+        repo = _CollectionsRepo()
+        repo.collections["collection-1"] = _collection()
+        repo.items["collection-1"] = [_item("item-1")]
+        exporter = _Exporter(exists=False)
+
+        ExportClipItemUseCase(collections=repo, videos=_Videos(storage_key="videos/source.mp4"), exporter=exporter).execute(
+            ExportClipItemCommand(
+                user_id="user-1",
+                video_id="video-1",
+                collection_id="collection-1",
+                item_id="item-1",
+            )
+        )
+
+        self.assertEqual(exporter.calls, [("videos/source.mp4", "exports/item-1.mp4", 5_000, 10_000)])
+
+    def test_export_clip_maps_not_found_and_forbidden_errors(self) -> None:
+        repo = _CollectionsRepo()
+        repo.collections["collection-1"] = _collection()
+        repo.items["collection-1"] = [_item("item-1")]
+
+        with self.assertRaises(ClipCollectionError) as forbidden_ctx:
+            ExportClipItemUseCase(collections=repo, videos=_Videos(owner_user_id="other-user"), exporter=_Exporter()).execute(
+                ExportClipItemCommand(
+                    user_id="user-1",
+                    video_id="video-1",
+                    collection_id="collection-1",
+                    item_id="item-1",
+                )
+            )
+        self.assertEqual(forbidden_ctx.exception.code, FORBIDDEN_TEAM_ACCESS)
+
+        with self.assertRaises(ClipCollectionError) as missing_collection_ctx:
+            ExportClipItemUseCase(collections=repo, videos=_Videos(), exporter=_Exporter()).execute(
+                ExportClipItemCommand(
+                    user_id="user-1",
+                    video_id="video-1",
+                    collection_id="missing",
+                    item_id="item-1",
+                )
+            )
+        self.assertEqual(missing_collection_ctx.exception.code, CLIP_COLLECTION_NOT_FOUND)
+
+        with self.assertRaises(ClipCollectionError) as missing_item_ctx:
+            ExportClipItemUseCase(collections=repo, videos=_Videos(), exporter=_Exporter()).execute(
+                ExportClipItemCommand(
+                    user_id="user-1",
+                    video_id="video-1",
+                    collection_id="collection-1",
+                    item_id="missing-item",
+                )
+            )
+        self.assertEqual(missing_item_ctx.exception.code, CLIP_COLLECTION_ITEM_NOT_FOUND)
+
+    def test_export_clip_maps_infrastructure_failures_to_domain_error(self) -> None:
+        repo = _CollectionsRepo()
+        repo.collections["collection-1"] = _collection()
+        repo.items["collection-1"] = [_item("item-1")]
+
+        with self.assertRaises(ClipCollectionError) as ctx:
+            ExportClipItemUseCase(collections=repo, videos=_Videos(), exporter=_Exporter(should_fail=True)).execute(
+                ExportClipItemCommand(
+                    user_id="user-1",
+                    video_id="video-1",
+                    collection_id="collection-1",
+                    item_id="item-1",
+                )
+            )
+        self.assertEqual(ctx.exception.code, CLIP_EXPORT_FAILED)
+
+    def test_export_clip_returns_video_not_found_when_source_video_is_unknown(self) -> None:
+        repo = _CollectionsRepo()
+
+        class _MissingVideos:
+            def get_video_context(self, *, video_id: str):
+                del video_id
+                return None
+
+        with self.assertRaises(ClipCollectionError) as ctx:
+            ExportClipItemUseCase(collections=repo, videos=_MissingVideos(), exporter=_Exporter()).execute(
+                ExportClipItemCommand(
+                    user_id="user-1",
+                    video_id="video-1",
+                    collection_id="collection-1",
+                    item_id="item-1",
+                )
+            )
+        self.assertEqual(ctx.exception.code, VIDEO_NOT_FOUND)
 
 
 if __name__ == "__main__":

@@ -229,7 +229,7 @@ class PostgresVideoRepository:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
-                SELECT v.id AS video_id, v.team_id, v.owner_user_id
+                SELECT v.id AS video_id, v.team_id, v.owner_user_id, v.duration_ms, v.storage_key
                 FROM videos v
                 INNER JOIN teams t ON t.id = v.team_id
                 WHERE v.id = %(video_id)s::uuid
@@ -244,4 +244,6 @@ class PostgresVideoRepository:
             video_id=str(row["video_id"]),
             team_id=str(row["team_id"]),
             owner_user_id=row["owner_user_id"],
+            duration_ms=row["duration_ms"],
+            storage_key=row["storage_key"],
         )
