@@ -34,3 +34,20 @@ services:
         sync: false
       - key: R2_ENDPOINT_URL
         sync: false
+      # --- Video processing service -------------------------------------
+      # All optional: with these unset the app boots normally and every other
+      # endpoint works; only job submission returns a 502 explaining why.
+
+      # The processing service's endpoint, printed by `modal deploy`.
+      - key: PROCESSING_SERVICE_URL
+        sync: false
+      # Sent to the processing service. Must equal the token that service
+      # expects, so it is copied rather than generated.
+      - key: PROCESSING_SERVICE_TOKEN
+        sync: false
+      # Guards POST /internal/jobs/status, the callback the processing service
+      # uses to report progress. Must be the SAME string configured on the
+      # processing service, so it is pasted rather than generated — a generated
+      # value would never match and every callback would be rejected.
+      - key: PROCESSING_CALLBACK_TOKEN
+        sync: false

@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from src.interfaces.http.bootstrap.dependencies import HttpDependencies
 from src.interfaces.http.routes.clip_collections_router import create_clip_collections_router
 from src.interfaces.http.routes.auth_router import create_auth_router
+from src.interfaces.http.routes.jobs_router import create_jobs_router
+from src.interfaces.http.routes.stats_router import create_stats_router
 from src.interfaces.http.routes.players_router import create_players_router
 from src.interfaces.http.routes.team_router import create_team_router
 from src.interfaces.http.routes.videos_router import create_videos_router
@@ -65,5 +67,21 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             add_clip_use_case=deps.add_clip_use_case,
             add_clip_batch_use_case=deps.add_clip_batch_use_case,
             delete_item_use_case=deps.delete_clip_collection_item_use_case,
+        )
+    )
+    app.include_router(
+        create_jobs_router(
+            submit_job_use_case=deps.submit_processing_job_use_case,
+            get_job_use_case=deps.get_processing_job_use_case,
+            list_video_jobs_use_case=deps.list_video_jobs_use_case,
+            record_job_progress_use_case=deps.record_job_progress_use_case,
+            get_job_results_use_case=deps.get_job_results_use_case,
+            callback_token=deps.processing_callback_token,
+        )
+    )
+    app.include_router(
+        create_stats_router(
+            game_stats_use_case=deps.game_stats_use_case,
+            court_positions_use_case=deps.court_positions_use_case,
         )
     )

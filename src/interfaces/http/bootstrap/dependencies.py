@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 import uuid
 
 import psycopg
@@ -46,6 +47,15 @@ from src.application.team.use_cases import (
     ListTeamsUseCase,
     UpdateTeamUseCase,
 )
+from src.application.jobs.ports import ProcessingServicePort
+from src.application.jobs.use_cases import (
+    GetJobResultsUseCase,
+    GetProcessingJobUseCase,
+    ListVideoJobsUseCase,
+    RecordJobProgressUseCase,
+    SubmitProcessingJobUseCase,
+)
+from src.application.stats.use_cases import GetCourtPositionsUseCase, GetGameStatsUseCase
 from src.application.video.errors import TEAM_NOT_FOUND, VideoError
 from src.application.video.ports import TeamAccessPort
 from src.application.video.use_cases import (
@@ -66,6 +76,16 @@ from src.infrastructure.auth.postgres_repositories import (
     PostgresUserRepository,
 )
 from src.infrastructure.clip_collections.postgres_repository import PostgresClipCollectionRepository
+from src.infrastructure.jobs.http_processing_service import (
+    HttpProcessingService,
+    UnconfiguredProcessingService,
+)
+from src.infrastructure.stats.r2_artifact_reader import R2ArtifactReader, UnavailableArtifactReader
+from src.infrastructure.jobs.r2_artifact_urls import R2ArtifactUrls, UnavailableArtifactUrls
+from src.infrastructure.jobs.postgres_job_repository import (
+    PostgresJobRepository,
+    PostgresVideoLookup,
+)
 from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
 from src.infrastructure.team.postgres_repository import PostgresTeamRepository
 from src.infrastructure.storage import R2Storage
@@ -208,7 +228,31 @@ class HttpDependencies:
     add_clip_use_case: AddClipUseCase
     add_clip_batch_use_case: AddClipBatchUseCase
     delete_clip_collection_item_use_case: DeleteClipCollectionItemUseCase
+    submit_processing_job_use_case: SubmitProcessingJobUseCase
+    get_processing_job_use_case: GetProcessingJobUseCase
+    list_video_jobs_use_case: ListVideoJobsUseCase
+    record_job_progress_use_case: RecordJobProgressUseCase
+    get_job_results_use_case: GetJobResultsUseCase
+    game_stats_use_case: GetGameStatsUseCase
+    court_positions_use_case: GetCourtPositionsUseCase
+    processing_callback_token: str
     access_token_resolver: JWTAccessTokenResolver
+
+
+def build_processing_service() -> ProcessingServicePort:
+    """Pick a processing-service adapter based on configuration.
+
+    Absent configuration is a supported state, not an error: the GPU service is
+    developed separately, and every other endpoint must keep working before it
+    exists. Submitting a job then fails with a clear 502 rather than preventing
+    the app from booting.
+    """
+
+    url = (os.getenv("PROCESSING_SERVICE_URL") or "").strip()
+    token = (os.getenv("PROCESSING_SERVICE_TOKEN") or "").strip()
+    if not url or not token:
+        return UnconfiguredProcessingService()
+    return HttpProcessingService(endpoint_url=url, auth_token=token)
 
 
 def build_http_dependencies(
@@ -236,7 +280,20 @@ def build_http_dependencies(
     teams_repo = PostgresTeamRepository(connection=conn)
     videos_repo = PostgresVideoRepository(connection=conn)
     clip_collections_repo = PostgresClipCollectionRepository(connection=conn)
+    jobs_repo = PostgresJobRepository(connection=conn)
+    video_lookup = PostgresVideoLookup(connection=conn)
+    processing_service = build_processing_service()
     video_storage = R2Storage()
+    artifact_urls = (
+        R2ArtifactUrls(storage=video_storage)
+        if video_storage.is_configured
+        else UnavailableArtifactUrls()
+    )
+    artifact_reader = (
+        R2ArtifactReader(storage=video_storage)
+        if video_storage.is_configured
+        else UnavailableArtifactReader()
+    )
     team_access = TeamExistsAccessAdapter(teams=teams_repo)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
@@ -372,6 +429,35 @@ def build_http_dependencies(
             collections=clip_collections_repo,
             videos=videos_repo,
             uow=uow,
+        ),
+        submit_processing_job_use_case=SubmitProcessingJobUseCase(
+            jobs=jobs_repo,
+            videos=video_lookup,
+            processing=processing_service,
+            team_access=team_access,
+            ids=ids,
+            uow=uow,
+        ),
+        get_processing_job_use_case=GetProcessingJobUseCase(
+            jobs=jobs_repo,
+            team_access=team_access,
+        ),
+        list_video_jobs_use_case=ListVideoJobsUseCase(
+            jobs=jobs_repo,
+            team_access=team_access,
+        ),
+        record_job_progress_use_case=RecordJobProgressUseCase(jobs=jobs_repo, uow=uow),
+        get_job_results_use_case=GetJobResultsUseCase(
+            jobs=jobs_repo,
+            urls=artifact_urls,
+            team_access=team_access,
+        ),
+        processing_callback_token=(os.getenv("PROCESSING_CALLBACK_TOKEN") or "").strip(),
+        game_stats_use_case=GetGameStatsUseCase(
+            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
+        ),
+        court_positions_use_case=GetCourtPositionsUseCase(
+            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
         ),
         access_token_resolver=access_token_resolver,
     )
