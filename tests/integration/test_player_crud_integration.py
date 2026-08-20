@@ -86,7 +86,7 @@ def _payload() -> dict[str, object]:
         "birth_date": "1987-06-24",
         "height_cm": 170,
         "weight_kg": 72,
-        "primary_position": "RW",
+        "primary_position": "SF",
     }
 
 
@@ -119,7 +119,7 @@ def test_player_crud_happy_path(client: TestClient) -> None:
             "birth_date": "1987-06-24",
             "height_cm": 171,
             "weight_kg": 73,
-            "primary_position": "AM",
+            "primary_position": "PG",
         },
     )
     assert updated.status_code == 200
@@ -144,7 +144,7 @@ def test_player_update_and_delete_return_404_when_player_missing(client: TestCli
             "birth_date": "1990-01-01",
             "height_cm": 180,
             "weight_kg": 75,
-            "primary_position": "CB",
+            "primary_position": "PF",
         },
     )
     assert update_missing.status_code == 404
@@ -212,7 +212,7 @@ def test_player_update_preserves_assigned_team(client: TestClient) -> None:
             "birth_date": "1987-06-24",
             "height_cm": 171,
             "weight_kg": 73,
-            "primary_position": "AM",
+            "primary_position": "PG",
         },
     )
     assert updated.status_code == 200

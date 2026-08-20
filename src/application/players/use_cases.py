@@ -1,24 +1,32 @@
 from __future__ import annotations
 
-"""Player application use cases.
-
-This module coordinates player-related workflows and keeps persistence details
-behind repository and unit-of-work ports.
-"""
-
 from dataclasses import dataclass
 from datetime import date
 
-from src.application.players.errors import PLAYER_NOT_FOUND, TEAM_NOT_FOUND, PlayerError
+from src.application.players.errors import (
+    INVALID_POSITION,
+    PLAYER_NOT_FOUND,
+    TEAM_NOT_FOUND,
+    PlayerError,
+)
 from src.application.players.ports import IdGeneratorPort, PlayerRepositoryPort, UnitOfWorkPort
 from src.application.team.ports import TeamRepositoryPort
 from src.domain.players.entities import Player
+from src.domain.players.positions import VALID_POSITION_CODES, is_valid_position
+
+
+def _validate_position(code: str) -> None:
+    if not is_valid_position(code):
+        raise PlayerError(
+            code=INVALID_POSITION,
+            message=f"Invalid position {code!r}.",
+            details={"allowed": sorted(VALID_POSITION_CODES)},
+        )
 
 
 @dataclass(frozen=True)
 class CreatePlayerCommand:
-    """Input contract for creating a player aggregate."""
-
+    user_id: str
     first_name: str
     last_name: str
     birth_date: date
@@ -29,8 +37,7 @@ class CreatePlayerCommand:
 
 @dataclass(frozen=True)
 class UpdatePlayerCommand:
-    """Input contract for full player profile updates."""
-
+    user_id: str
     id: str
     first_name: str
     last_name: str
@@ -42,30 +49,25 @@ class UpdatePlayerCommand:
 
 @dataclass(frozen=True)
 class DeletePlayerCommand:
-    """Input contract for deleting a player by identifier."""
-
+    user_id: str
     id: str
 
 
 @dataclass(frozen=True)
 class AssignPlayerTeamCommand:
-    """Input contract for assigning a player to a team."""
-
+    user_id: str
     player_id: str
     team_id: str
 
 
 class CreatePlayerUseCase:
-    """Creates a new player inside a single transaction boundary."""
-
     def __init__(self, *, players: PlayerRepositoryPort, ids: IdGeneratorPort, uow: UnitOfWorkPort) -> None:
         self._players = players
         self._ids = ids
         self._uow = uow
 
     def execute(self, command: CreatePlayerCommand) -> Player:
-        """Persists a new player with generated identifier and no initial team."""
-
+        _validate_position(command.primary_position)
         player = Player(
             id=self._ids.new_id(),
             first_name=command.first_name,
@@ -74,6 +76,7 @@ class CreatePlayerUseCase:
             height_cm=command.height_cm,
             weight_kg=command.weight_kg,
             primary_position=command.primary_position,
+            owner_user_id=command.user_id,
             team_id=None,
         )
         with self._uow.transaction():
@@ -81,42 +84,32 @@ class CreatePlayerUseCase:
 
 
 class ListPlayersUseCase:
-    """Read-only listing of all players."""
-
     def __init__(self, *, players: PlayerRepositoryPort) -> None:
         self._players = players
 
-    def execute(self) -> list[Player]:
-        """Returns repository-provided deterministic listing order."""
-
-        return self._players.list_all()
+    def execute(self, *, user_id: str) -> list[Player]:
+        return self._players.list_by_owner(owner_user_id=user_id)
 
 
 class ListPlayersByTeamUseCase:
-    """Read-only listing scoped to one team identifier."""
-
     def __init__(self, *, players: PlayerRepositoryPort) -> None:
         self._players = players
 
-    def execute(self, team_id: str) -> list[Player]:
-        """Returns players assigned to one team id in stable order."""
-
-        return self._players.list_by_team(team_id)
+    def execute(self, *, user_id: str, team_id: str) -> list[Player]:
+        return self._players.list_by_owner_and_team(owner_user_id=user_id, team_id=team_id)
 
 
 class UpdatePlayerUseCase:
-    """Updates a player atomically and maps missing rows to domain-safe errors."""
-
     def __init__(self, *, players: PlayerRepositoryPort, uow: UnitOfWorkPort) -> None:
         self._players = players
         self._uow = uow
 
     def execute(self, command: UpdatePlayerCommand) -> Player:
-        """Returns the updated player or raises PLAYER_NOT_FOUND when absent."""
-
+        _validate_position(command.primary_position)
         with self._uow.transaction():
             updated = self._players.update(
                 player_id=command.id,
+                owner_user_id=command.user_id,
                 first_name=command.first_name,
                 last_name=command.last_name,
                 birth_date=command.birth_date,
@@ -130,49 +123,32 @@ class UpdatePlayerUseCase:
 
 
 class DeletePlayerUseCase:
-    """Deletes a player atomically.
-
-    Repository `False` is translated to PLAYER_NOT_FOUND so adapters expose a
-    stable application error contract.
-    """
-
     def __init__(self, *, players: PlayerRepositoryPort, uow: UnitOfWorkPort) -> None:
         self._players = players
         self._uow = uow
 
     def execute(self, command: DeletePlayerCommand) -> None:
-        """Deletes a player or raises PLAYER_NOT_FOUND when id is absent."""
-
         with self._uow.transaction():
-            deleted = self._players.delete(command.id)
+            deleted = self._players.delete(command.id, owner_user_id=command.user_id)
         if not deleted:
             raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")
 
 
 class AssignPlayerTeamUseCase:
-    """Assigns a player to an existing team in one transaction.
-
-    Team existence is validated first to preserve error semantics: missing team
-    takes precedence over missing player.
-    """
-
     def __init__(self, *, players: PlayerRepositoryPort, teams: TeamRepositoryPort, uow: UnitOfWorkPort) -> None:
         self._players = players
         self._teams = teams
         self._uow = uow
 
     def execute(self, command: AssignPlayerTeamCommand) -> Player:
-        """Assigns player to team with explicit error-priority guarantees.
-
-        Error mapping precedence is preserved intentionally:
-        1) missing team -> TEAM_NOT_FOUND
-        2) missing player -> PLAYER_NOT_FOUND
-        """
-
         with self._uow.transaction():
-            if not self._teams.exists(command.team_id):
+            if not self._teams.is_owned_by(team_id=command.team_id, owner_user_id=command.user_id):
                 raise PlayerError(code=TEAM_NOT_FOUND, message="Team not found")
-            player = self._players.assign_team(player_id=command.player_id, team_id=command.team_id)
+            player = self._players.assign_team(
+                player_id=command.player_id,
+                owner_user_id=command.user_id,
+                team_id=command.team_id,
+            )
         if player is None:
             raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")
         return player

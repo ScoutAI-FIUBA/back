@@ -21,7 +21,7 @@ class PlayerRepositoryPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_all(self) -> list[Player]:
+    def list_by_owner(self, *, owner_user_id: str) -> list[Player]:
         raise NotImplementedError
 
     @abstractmethod
@@ -29,6 +29,7 @@ class PlayerRepositoryPort(ABC):
         self,
         *,
         player_id: str,
+        owner_user_id: str,
         first_name: str,
         last_name: str,
         birth_date: date,
@@ -41,15 +42,13 @@ class PlayerRepositoryPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def delete(self, player_id: str) -> bool:
+    def delete(self, player_id: str, *, owner_user_id: str) -> bool:
         raise NotImplementedError
 
     @abstractmethod
-    def assign_team(self, *, player_id: str, team_id: str) -> Player | None:
-        """Assigns team and returns player, or `None` if player is missing."""
-
+    def assign_team(self, *, player_id: str, owner_user_id: str, team_id: str) -> Player | None:
         raise NotImplementedError
 
     @abstractmethod
-    def list_by_team(self, team_id: str) -> list[Player]:
+    def list_by_owner_and_team(self, *, owner_user_id: str, team_id: str) -> list[Player]:
         raise NotImplementedError

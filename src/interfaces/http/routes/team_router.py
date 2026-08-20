@@ -3,7 +3,7 @@ from __future__ import annotations
 from http import HTTPStatus
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from src.application.team.use_cases import (
@@ -64,9 +64,10 @@ def create_team_router(
     router = APIRouter(prefix="/teams", tags=["teams"])
 
     @router.post("", response_model=None, status_code=HTTPStatus.CREATED)
-    def create_team(payload: CreateTeamRequest):
+    def create_team(payload: CreateTeamRequest, request: Request):
         team = create_team_use_case.execute(
             CreateTeamCommand(
+                user_id=str(request.state.user_id),
                 name=payload.name,
                 short_name=payload.short_name,
                 city=payload.city,
@@ -76,14 +77,15 @@ def create_team_router(
         return {"team": _to_payload(team)}
 
     @router.get("", response_model=None)
-    def list_teams():
-        teams = list_teams_use_case.execute()
+    def list_teams(request: Request):
+        teams = list_teams_use_case.execute(user_id=str(request.state.user_id))
         return {"teams": [_to_payload(team) for team in teams]}
 
     @router.put("/{team_id}", response_model=None)
-    def update_team(team_id: UUID, payload: UpdateTeamRequest):
+    def update_team(team_id: UUID, payload: UpdateTeamRequest, request: Request):
         team = update_team_use_case.execute(
             UpdateTeamCommand(
+                user_id=str(request.state.user_id),
                 team_id=str(team_id),
                 name=payload.name,
                 short_name=payload.short_name,
@@ -96,8 +98,10 @@ def create_team_router(
         return {"team": _to_payload(team)}
 
     @router.delete("/{team_id}", response_model=None, status_code=HTTPStatus.NO_CONTENT)
-    def delete_team(team_id: UUID):
-        deleted = delete_team_use_case.execute(DeleteTeamCommand(team_id=str(team_id)))
+    def delete_team(team_id: UUID, request: Request):
+        deleted = delete_team_use_case.execute(
+            DeleteTeamCommand(user_id=str(request.state.user_id), team_id=str(team_id))
+        )
         if not deleted:
             raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Team not found")
         return Response(status_code=HTTPStatus.NO_CONTENT)

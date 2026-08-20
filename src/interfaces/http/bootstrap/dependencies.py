@@ -92,19 +92,12 @@ from src.infrastructure.storage import R2Storage
 from src.infrastructure.video.postgres_video_repository import PostgresVideoRepository
 
 
-class TeamExistsAccessAdapter(TeamAccessPort):
-    """Temporary team access adapter based on team existence.
-
-    This preserves the TeamAccessPort contract while membership table is pending.
-    """
-
+class TeamOwnershipAccessAdapter(TeamAccessPort):
     def __init__(self, *, teams: PostgresTeamRepository) -> None:
         self._teams = teams
 
     def assert_access(self, *, user_id: str, team_id: str) -> None:
-        del user_id
-        if not self._teams.exists(team_id):
-            # Missing teams are treated as 404 to match the upload-init contract.
+        if not self._teams.is_owned_by(team_id=team_id, owner_user_id=user_id):
             raise VideoError(code=TEAM_NOT_FOUND, message="Team not found")
 
 
@@ -294,7 +287,7 @@ def build_http_dependencies(
         if video_storage.is_configured
         else UnavailableArtifactReader()
     )
-    team_access = TeamExistsAccessAdapter(teams=teams_repo)
+    team_access = TeamOwnershipAccessAdapter(teams=teams_repo)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
     refresh_tokens = OpaqueRefreshTokenService(secret=refresh_secret)

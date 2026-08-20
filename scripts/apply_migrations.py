@@ -18,6 +18,7 @@ def main() -> None:
         Path("src/infrastructure/clip_collections/migrations"),
         # Jobs reference videos, teams and users, so this must run after them.
         Path("src/infrastructure/jobs/migrations"),
+        Path("src/infrastructure/ownership/migrations"),
     ]
     migration_files = [migration for directory in migration_dirs for migration in sorted(directory.glob("*.sql"))]
 

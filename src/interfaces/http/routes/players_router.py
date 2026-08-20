@@ -10,7 +10,7 @@ from datetime import date
 from http import HTTPStatus
 from uuid import UUID
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -77,12 +77,13 @@ def create_players_router(
     router = APIRouter(prefix="/players", tags=["players"])
 
     @router.post("", status_code=HTTPStatus.CREATED, response_model=None)
-    def create_player(payload: PlayerPayload):
+    def create_player(payload: PlayerPayload, request: Request):
         """Creates one player from validated payload fields."""
 
         try:
             player = create_player_use_case.execute(
                 CreatePlayerCommand(
+                    user_id=str(request.state.user_id),
                     first_name=payload.first_name,
                     last_name=payload.last_name,
                     birth_date=payload.birth_date,
@@ -96,22 +97,24 @@ def create_players_router(
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
 
     @router.get("", response_model=None)
-    def list_players(team_id: UUID | None = None):
-        """Lists all players or filters by team when ``team_id`` is provided."""
+    def list_players(request: Request, team_id: UUID | None = None):
+        """Lists the scout's players, optionally filtered to one of their teams."""
 
+        user_id = str(request.state.user_id)
         if team_id is None:
-            players = list_players_use_case.execute()
+            players = list_players_use_case.execute(user_id=user_id)
         else:
-            players = list_players_by_team_use_case.execute(str(team_id))
+            players = list_players_by_team_use_case.execute(user_id=user_id, team_id=str(team_id))
         return {"players": [_to_player_response(player) for player in players]}
 
     @router.put("/{player_id}", response_model=None)
-    def update_player(player_id: UUID, payload: PlayerPayload):
+    def update_player(player_id: UUID, payload: PlayerPayload, request: Request):
         """Updates one player and maps application errors to HTTP envelopes."""
 
         try:
             player = update_player_use_case.execute(
                 UpdatePlayerCommand(
+                    user_id=str(request.state.user_id),
                     id=str(player_id),
                     first_name=payload.first_name,
                     last_name=payload.last_name,
@@ -126,22 +129,28 @@ def create_players_router(
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
 
     @router.delete("/{player_id}", response_model=None)
-    def delete_player(player_id: UUID):
+    def delete_player(player_id: UUID, request: Request):
         """Deletes one player and returns HTTP 204 on success."""
 
         try:
-            delete_player_use_case.execute(DeletePlayerCommand(id=str(player_id)))
+            delete_player_use_case.execute(
+                DeletePlayerCommand(user_id=str(request.state.user_id), id=str(player_id))
+            )
             return Response(status_code=HTTPStatus.NO_CONTENT)
         except PlayerError as exc:
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
 
     @router.put("/{player_id}/team/{team_id}", response_model=None)
-    def assign_player_to_team(player_id: UUID, team_id: UUID):
+    def assign_player_to_team(player_id: UUID, team_id: UUID, request: Request):
         """Assigns a player to a team using typed UUID boundary inputs."""
 
         try:
             player = assign_player_team_use_case.execute(
-                AssignPlayerTeamCommand(player_id=str(player_id), team_id=str(team_id))
+                AssignPlayerTeamCommand(
+                    user_id=str(request.state.user_id),
+                    player_id=str(player_id),
+                    team_id=str(team_id),
+                )
             )
             return {"player": _to_player_response(player)}
         except PlayerError as exc:

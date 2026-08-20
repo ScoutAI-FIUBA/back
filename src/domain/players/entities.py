@@ -28,4 +28,5 @@ class Player:
     height_cm: int
     weight_kg: int
     primary_position: str
+    owner_user_id: str = ""
     team_id: str | None = None

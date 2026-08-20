@@ -54,6 +54,7 @@ class TestPostgresTeamRepository(unittest.TestCase):
             "short_name": "CARP",
             "city": "Buenos Aires",
             "country": "Argentina",
+            "owner_user_id": "user-1",
             "created_at": now,
         }
         created = repo.create(
@@ -63,6 +64,7 @@ class TestPostgresTeamRepository(unittest.TestCase):
                 short_name="CARP",
                 city="Buenos Aires",
                 country="Argentina",
+                owner_user_id="user-1",
                 created_at=now,
             )
         )
@@ -70,7 +72,7 @@ class TestPostgresTeamRepository(unittest.TestCase):
         self.assertIn("INSERT INTO teams", conn.executed[0][0])
 
         conn.next_rows = [conn.next_row]
-        listed = repo.list_all()
+        listed = repo.list_by_owner(owner_user_id="user-1")
         self.assertEqual(len(listed), 1)
         self.assertIn("SELECT * FROM teams", conn.executed[1][0])
 
@@ -80,10 +82,12 @@ class TestPostgresTeamRepository(unittest.TestCase):
             "short_name": "UPD",
             "city": "Cordoba",
             "country": "Argentina",
+            "owner_user_id": "user-1",
             "created_at": now,
         }
         updated = repo.update(
             "8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d",
+            owner_user_id="user-1",
             name="Updated",
             short_name="UPD",
             city="Cordoba",
@@ -94,12 +98,12 @@ class TestPostgresTeamRepository(unittest.TestCase):
         self.assertIn("UPDATE teams", conn.executed[2][0])
 
         conn.next_rowcount = 1
-        deleted = repo.delete("8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d")
+        deleted = repo.delete("8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d", owner_user_id="user-1")
         self.assertTrue(deleted)
         self.assertIn("DELETE FROM teams", conn.executed[3][0])
 
         conn.next_row = {"exists": 1}
-        exists = repo.exists("8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d")
+        exists = repo.is_owned_by(team_id="8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d", owner_user_id="user-1")
         self.assertTrue(exists)
         self.assertIn("SELECT 1 FROM teams", conn.executed[4][0])
 

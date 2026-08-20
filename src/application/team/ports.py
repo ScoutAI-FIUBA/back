@@ -20,21 +20,21 @@ class TeamRepositoryPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_all(self) -> list[Team]:
+    def list_by_owner(self, *, owner_user_id: str) -> list[Team]:
         raise NotImplementedError
 
     @abstractmethod
-    def update(self, team_id: str, *, name: str, short_name: str, city: str, country: str) -> Team | None:
-        """Returns updated team or `None` when `team_id` is not found."""
-
+    def update(
+        self, team_id: str, *, owner_user_id: str, name: str, short_name: str, city: str, country: str
+    ) -> Team | None:
         raise NotImplementedError
 
     @abstractmethod
-    def delete(self, team_id: str) -> bool:
+    def delete(self, team_id: str, *, owner_user_id: str) -> bool:
         raise NotImplementedError
 
     @abstractmethod
-    def exists(self, team_id: str) -> bool:
+    def is_owned_by(self, *, team_id: str, owner_user_id: str) -> bool:
         raise NotImplementedError
 
 

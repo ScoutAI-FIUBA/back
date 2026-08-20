@@ -40,24 +40,21 @@ def _row_to_team(row: dict[str, Any] | None) -> Team | None:
         short_name=row["short_name"],
         city=row["city"],
         country=row["country"],
+        owner_user_id=row["owner_user_id"],
         created_at=row["created_at"],
     )
 
 
 class PostgresTeamRepository:
-    """Team persistence adapter with explicit CRUD/exists guarantees."""
-
     def __init__(self, *, connection: ConnectionLike) -> None:
         self._connection = connection
 
     def create(self, team: Team) -> Team:
-        """Inserts one team row and returns the stored aggregate state."""
-
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
-                INSERT INTO teams (id, name, short_name, city, country, created_at)
-                VALUES (%(id)s, %(name)s, %(short_name)s, %(city)s, %(country)s, %(created_at)s)
+                INSERT INTO teams (id, name, short_name, city, country, owner_user_id, created_at)
+                VALUES (%(id)s, %(name)s, %(short_name)s, %(city)s, %(country)s, %(owner_user_id)s, %(created_at)s)
                 RETURNING *
                 """,
                 asdict(team),
@@ -65,11 +62,12 @@ class PostgresTeamRepository:
             row = cur.fetchone()
         return _row_to_team(row) or team
 
-    def list_all(self) -> list[Team]:
-        """Returns teams ordered by ``created_at DESC`` for deterministic results."""
-
+    def list_by_owner(self, *, owner_user_id: str) -> list[Team]:
         with self._connection.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT * FROM teams ORDER BY created_at DESC")
+            cur.execute(
+                "SELECT * FROM teams WHERE owner_user_id = %(owner)s ORDER BY created_at DESC",
+                {"owner": owner_user_id},
+            )
             rows = cur.fetchall()
         teams: list[Team] = []
         for row in rows:
@@ -78,9 +76,9 @@ class PostgresTeamRepository:
                 teams.append(team)
         return teams
 
-    def update(self, team_id: str, *, name: str, short_name: str, city: str, country: str) -> Team | None:
-        """Updates team fields and returns ``None`` when id does not exist."""
-
+    def update(
+        self, team_id: str, *, owner_user_id: str, name: str, short_name: str, city: str, country: str
+    ) -> Team | None:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
@@ -89,7 +87,7 @@ class PostgresTeamRepository:
                     short_name = %(short_name)s,
                     city = %(city)s,
                     country = %(country)s
-                WHERE id = %(id)s
+                WHERE id = %(id)s AND owner_user_id = %(owner)s
                 RETURNING *
                 """,
                 {
@@ -98,24 +96,24 @@ class PostgresTeamRepository:
                     "short_name": short_name,
                     "city": city,
                     "country": country,
+                    "owner": owner_user_id,
                 },
             )
             row = cur.fetchone()
         return _row_to_team(row)
 
-    def delete(self, team_id: str) -> bool:
-        """Permanently removes one team row.
-
-        Returns ``True`` only when a row was actually deleted.
-        """
-
+    def delete(self, team_id: str, *, owner_user_id: str) -> bool:
         with self._connection.cursor() as cur:
-            cur.execute("DELETE FROM teams WHERE id = %(id)s", {"id": team_id})
+            cur.execute(
+                "DELETE FROM teams WHERE id = %(id)s AND owner_user_id = %(owner)s",
+                {"id": team_id, "owner": owner_user_id},
+            )
             return cur.rowcount > 0
 
-    def exists(self, team_id: str) -> bool:
-        """Existence probe used by cross-aggregate assignment workflows."""
-
+    def is_owned_by(self, *, team_id: str, owner_user_id: str) -> bool:
         with self._connection.cursor() as cur:
-            cur.execute("SELECT 1 FROM teams WHERE id = %(id)s", {"id": team_id})
+            cur.execute(
+                "SELECT 1 FROM teams WHERE id = %(id)s AND owner_user_id = %(owner)s",
+                {"id": team_id, "owner": owner_user_id},
+            )
             return cur.fetchone() is not None

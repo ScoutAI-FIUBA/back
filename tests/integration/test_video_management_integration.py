@@ -132,7 +132,7 @@ def _player_payload() -> dict[str, object]:
         "birth_date": "1987-06-24",
         "height_cm": 170,
         "weight_kg": 72,
-        "primary_position": "RW",
+        "primary_position": "SF",
     }
 
 
