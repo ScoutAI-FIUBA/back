@@ -33,6 +33,7 @@ class CreatePlayerCommand:
     height_cm: int
     weight_kg: int
     primary_position: str
+    jersey_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class UpdatePlayerCommand:
     height_cm: int
     weight_kg: int
     primary_position: str
+    jersey_number: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,7 @@ class CreatePlayerUseCase:
             height_cm=command.height_cm,
             weight_kg=command.weight_kg,
             primary_position=command.primary_position,
+            jersey_number=command.jersey_number,
             owner_user_id=command.user_id,
             team_id=None,
         )
@@ -116,6 +119,7 @@ class UpdatePlayerUseCase:
                 height_cm=command.height_cm,
                 weight_kg=command.weight_kg,
                 primary_position=command.primary_position,
+                jersey_number=command.jersey_number,
             )
         if updated is None:
             raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")

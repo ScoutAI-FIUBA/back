@@ -141,6 +141,55 @@ class TestPlayerCrud(unittest.TestCase):
         self.assertEqual(client.get("/players").json()["players"], [])
 
 
+class TestJerseyNumber(unittest.TestCase):
+    def test_jersey_number_round_trips(self) -> None:
+        client, _ = build_client()
+        created = client.post("/players", json={**VALID, "jersey_number": "22"})
+        self.assertEqual(created.json()["player"]["jersey_number"], "22")
+        listed = client.get("/players").json()["players"]
+        self.assertEqual(listed[0]["jersey_number"], "22")
+
+    def test_jersey_number_is_optional(self) -> None:
+        client, _ = build_client()
+        created = client.post("/players", json=VALID)
+        self.assertEqual(created.status_code, 201)
+        self.assertIsNone(created.json()["player"]["jersey_number"])
+
+    def test_zero_is_kept_and_double_zero_stays_distinct(self) -> None:
+        """0 is a real number, so it must not be read as "unassigned"."""
+
+        client, _ = build_client()
+        zero = client.post("/players", json={**VALID, "jersey_number": "0"})
+        self.assertEqual(zero.json()["player"]["jersey_number"], "0")
+        double_zero = client.post("/players", json={**VALID, "jersey_number": "00"})
+        self.assertEqual(double_zero.json()["player"]["jersey_number"], "00")
+
+    def test_blank_jersey_number_is_stored_as_unassigned(self) -> None:
+        client, _ = build_client()
+        created = client.post("/players", json={**VALID, "jersey_number": "  "})
+        self.assertEqual(created.status_code, 201)
+        self.assertIsNone(created.json()["player"]["jersey_number"])
+
+    def test_numeric_jersey_number_is_coerced_to_text(self) -> None:
+        client, _ = build_client()
+        created = client.post("/players", json={**VALID, "jersey_number": 7})
+        self.assertEqual(created.json()["player"]["jersey_number"], "7")
+
+    def test_out_of_range_jersey_numbers_are_rejected(self) -> None:
+        client, _ = build_client()
+        for value in ("100", "-1", "1.5", "AB"):
+            r = client.post("/players", json={**VALID, "jersey_number": value})
+            self.assertEqual(r.status_code, 422, value)
+
+    def test_update_can_change_and_clear_the_jersey_number(self) -> None:
+        client, _ = build_client()
+        pid = client.post("/players", json={**VALID, "jersey_number": "9"}).json()["player"]["id"]
+        changed = client.put(f"/players/{pid}", json={**VALID, "jersey_number": "11"})
+        self.assertEqual(changed.json()["player"]["jersey_number"], "11")
+        cleared = client.put(f"/players/{pid}", json=VALID)
+        self.assertIsNone(cleared.json()["player"]["jersey_number"])
+
+
 class TestPositionValidation(unittest.TestCase):
     def test_each_basketball_code_is_accepted(self) -> None:
         client, _ = build_client()

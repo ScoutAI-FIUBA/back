@@ -27,7 +27,11 @@ def _required_env() -> dict[str, str]:
 
 
 def _apply_migrations(database_url: str) -> None:
-    migration_dirs = [Path("src/infrastructure/auth/migrations"), Path("src/infrastructure/team/migrations")]
+    migration_dirs = [
+        Path("src/infrastructure/auth/migrations"),
+        Path("src/infrastructure/players/migrations"),
+        Path("src/infrastructure/team/migrations"),
+    ]
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
             for migration_dir in migration_dirs:
@@ -132,6 +136,35 @@ def test_player_crud_happy_path(client: TestClient) -> None:
     listed_after_delete = client.get("/players")
     assert listed_after_delete.status_code == 200
     assert listed_after_delete.json()["players"] == []
+
+
+def test_jersey_number_persists_across_reads_and_updates(client: TestClient) -> None:
+    created = client.post("/players", json={**_payload(), "jersey_number": "0"})
+    assert created.status_code == 201
+    player = created.json()["player"]
+    assert player["jersey_number"] == "0"
+    player_id = player["id"]
+
+    listed = client.get("/players")
+    assert listed.json()["players"][0]["jersey_number"] == "0"
+
+    updated = client.put(
+        f"/players/{player_id}",
+        json={
+            "first_name": player["first_name"],
+            "last_name": player["last_name"],
+            "birth_date": player["birth_date"],
+            "height_cm": player["height_cm"],
+            "weight_kg": player["weight_kg"],
+            "primary_position": player["primary_position"],
+            "jersey_number": "00",
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["player"]["jersey_number"] == "00"
+
+    reread = client.get("/players")
+    assert reread.json()["players"][0]["jersey_number"] == "00"
 
 
 def test_player_update_and_delete_return_404_when_player_missing(client: TestClient) -> None:

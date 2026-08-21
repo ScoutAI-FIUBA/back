@@ -34,6 +34,7 @@ def _row_to_player(row: dict[str, Any] | None) -> Player | None:
         height_cm=row["height_cm"],
         weight_kg=row["weight_kg"],
         primary_position=row["primary_position"],
+        jersey_number=row.get("jersey_number"),
         owner_user_id=row["owner_user_id"],
         team_id=row.get("team_id"),
     )
@@ -53,10 +54,11 @@ class PostgresPlayerRepository:
                 """
                 INSERT INTO players (
                     id, first_name, last_name, birth_date, height_cm, weight_kg,
-                    primary_position, owner_user_id, team_id
+                    primary_position, jersey_number, owner_user_id, team_id
                 ) VALUES (
                     %(id)s, %(first_name)s, %(last_name)s, %(birth_date)s, %(height_cm)s,
-                    %(weight_kg)s, %(primary_position)s, %(owner_user_id)s, %(team_id)s
+                    %(weight_kg)s, %(primary_position)s, %(jersey_number)s, %(owner_user_id)s,
+                    %(team_id)s
                 )
                 RETURNING *
                 """,
@@ -84,6 +86,7 @@ class PostgresPlayerRepository:
         height_cm: int,
         weight_kg: int,
         primary_position: str,
+        jersey_number: str | None,
     ) -> Player | None:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -95,7 +98,8 @@ class PostgresPlayerRepository:
                     birth_date = %(birth_date)s,
                     height_cm = %(height_cm)s,
                     weight_kg = %(weight_kg)s,
-                    primary_position = %(primary_position)s
+                    primary_position = %(primary_position)s,
+                    jersey_number = %(jersey_number)s
                 WHERE id = %(id)s AND owner_user_id = %(owner)s
                 RETURNING *
                 """,
@@ -108,6 +112,7 @@ class PostgresPlayerRepository:
                     "height_cm": height_cm,
                     "weight_kg": weight_kg,
                     "primary_position": primary_position,
+                    "jersey_number": jersey_number,
                 },
             )
             return _row_to_player(cur.fetchone())

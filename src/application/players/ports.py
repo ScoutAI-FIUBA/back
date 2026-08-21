@@ -36,6 +36,7 @@ class PlayerRepositoryPort(ABC):
         height_cm: int,
         weight_kg: int,
         primary_position: str,
+        jersey_number: str | None,
     ) -> Player | None:
         """Returns updated player or `None` when `player_id` does not exist."""
 

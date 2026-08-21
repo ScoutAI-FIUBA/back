@@ -8,11 +8,12 @@ and delegates business behavior to player application use cases.
 
 from datetime import date
 from http import HTTPStatus
+from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from src.application.players.errors import PlayerError, player_error_http_status
 from src.application.players.use_cases import (
@@ -29,6 +30,9 @@ from src.application.players.use_cases import (
 )
 
 
+JerseyNumber = Annotated[str, StringConstraints(pattern=r"^[0-9]{1,2}$")]
+
+
 class PlayerPayload(BaseModel):
     """Validated player payload used for create/update operations.
 
@@ -42,6 +46,15 @@ class PlayerPayload(BaseModel):
     height_cm: int = Field(gt=0, le=300)
     weight_kg: int = Field(gt=0, le=400)
     primary_position: str = Field(min_length=1, max_length=120)
+    jersey_number: JerseyNumber | None = None
+
+    @field_validator("jersey_number", mode="before")
+    @classmethod
+    def _blank_jersey_number_means_unassigned(cls, value: object) -> object:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 def _to_player_response(player) -> dict[str, object]:
@@ -55,6 +68,7 @@ def _to_player_response(player) -> dict[str, object]:
         "height_cm": player.height_cm,
         "weight_kg": player.weight_kg,
         "primary_position": player.primary_position,
+        "jersey_number": player.jersey_number,
         "team_id": player.team_id,
     }
 
@@ -90,6 +104,7 @@ def create_players_router(
                     height_cm=payload.height_cm,
                     weight_kg=payload.weight_kg,
                     primary_position=payload.primary_position,
+                    jersey_number=payload.jersey_number,
                 )
             )
             return {"player": _to_player_response(player)}
@@ -122,6 +137,7 @@ def create_players_router(
                     height_cm=payload.height_cm,
                     weight_kg=payload.weight_kg,
                     primary_position=payload.primary_position,
+                    jersey_number=payload.jersey_number,
                 )
             )
             return {"player": _to_player_response(player)}

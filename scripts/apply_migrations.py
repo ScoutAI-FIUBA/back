@@ -13,6 +13,8 @@ def main() -> None:
 
     migration_dirs = [
         Path("src/infrastructure/auth/migrations"),
+        # The players table is created by the auth migrations, so this must run after them.
+        Path("src/infrastructure/players/migrations"),
         Path("src/infrastructure/team/migrations"),
         Path("src/infrastructure/video/migrations"),
         Path("src/infrastructure/clip_collections/migrations"),
