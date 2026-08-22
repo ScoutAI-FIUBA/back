@@ -12,6 +12,16 @@ from datetime import datetime
 from src.domain.team.entities import Team
 
 
+TEAM_DELETE_CONFLICT_KIND_MATCH = "match_related"
+TEAM_DELETE_CONFLICT_KIND_GENERIC = "generic"
+
+
+class TeamDeleteConflictError(Exception):
+    def __init__(self, message: str, *, kind: str = TEAM_DELETE_CONFLICT_KIND_GENERIC) -> None:
+        self.kind = kind
+        super().__init__(message)
+
+
 class TeamRepositoryPort(ABC):
     """Persistence contract for team aggregates."""
 

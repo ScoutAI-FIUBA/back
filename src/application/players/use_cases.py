@@ -11,7 +11,7 @@ from src.application.players.errors import (
 )
 from src.application.players.ports import IdGeneratorPort, PlayerRepositoryPort, UnitOfWorkPort
 from src.application.team.ports import TeamRepositoryPort
-from src.domain.players.entities import Player
+from src.domain.players.entities import Player, build_empty_player_stats
 from src.domain.players.positions import VALID_POSITION_CODES, is_valid_position
 
 
@@ -81,6 +81,7 @@ class CreatePlayerUseCase:
             jersey_number=command.jersey_number,
             owner_user_id=command.user_id,
             team_id=None,
+            stats=build_empty_player_stats(),
         )
         with self._uow.transaction():
             return self._players.create(player)
@@ -153,6 +154,17 @@ class AssignPlayerTeamUseCase:
                 owner_user_id=command.user_id,
                 team_id=command.team_id,
             )
+        if player is None:
+            raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")
+        return player
+
+
+class GetPlayerStatsUseCase:
+    def __init__(self, *, players: PlayerRepositoryPort) -> None:
+        self._players = players
+
+    def execute(self, *, user_id: str, player_id: str) -> Player:
+        player = self._players.get_by_id(player_id=player_id, owner_user_id=user_id)
         if player is None:
             raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")
         return player

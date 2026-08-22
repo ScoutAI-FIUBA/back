@@ -31,6 +31,7 @@ def _apply_migrations(database_url: str) -> None:
         Path("src/infrastructure/auth/migrations"),
         Path("src/infrastructure/players/migrations"),
         Path("src/infrastructure/team/migrations"),
+        Path("src/infrastructure/matches/migrations"),
     ]
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
@@ -44,17 +45,23 @@ def _apply_migrations(database_url: str) -> None:
 @pytest.fixture(scope="session", autouse=True)
 def _integration_schema_ready() -> None:
     env = _required_env()
-    _apply_migrations(env["DATABASE_URL"])
+    try:
+        _apply_migrations(env["DATABASE_URL"])
+    except psycopg.OperationalError as exc:
+        pytest.skip(f"Postgres not reachable for integration tests: {exc}")
 
 
 @pytest.fixture(autouse=True)
 def _players_table_clean() -> None:
     env = _required_env()
-    with psycopg.connect(env["DATABASE_URL"]) as conn:
-        with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE players RESTART IDENTITY CASCADE")
-            cur.execute("TRUNCATE TABLE teams RESTART IDENTITY CASCADE")
-        conn.commit()
+    try:
+        with psycopg.connect(env["DATABASE_URL"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute("TRUNCATE TABLE players RESTART IDENTITY CASCADE")
+                cur.execute("TRUNCATE TABLE teams RESTART IDENTITY CASCADE")
+            conn.commit()
+    except psycopg.OperationalError as exc:
+        pytest.skip(f"Postgres not reachable for integration tests: {exc}")
 
 
 @pytest.fixture

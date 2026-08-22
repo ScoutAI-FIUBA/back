@@ -4,8 +4,12 @@ from http import HTTPStatus
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from src.application.matches.errors import MatchError, match_error_http_status
+from src.application.matches.use_cases import GetTeamStatsUseCase
+from src.application.team.errors import TeamError, team_error_http_status
 from src.application.team.use_cases import (
     CreateTeamCommand,
     CreateTeamUseCase,
@@ -54,6 +58,7 @@ def create_team_router(
     list_teams_use_case: ListTeamsUseCase,
     update_team_use_case: UpdateTeamUseCase,
     delete_team_use_case: DeleteTeamUseCase,
+    get_team_stats_use_case: GetTeamStatsUseCase,
 ) -> APIRouter:
     """Creates team endpoints and defines HTTP-level not-found semantics.
 
@@ -99,11 +104,41 @@ def create_team_router(
 
     @router.delete("/{team_id}", response_model=None, status_code=HTTPStatus.NO_CONTENT)
     def delete_team(team_id: UUID, request: Request):
-        deleted = delete_team_use_case.execute(
-            DeleteTeamCommand(user_id=str(request.state.user_id), team_id=str(team_id))
-        )
-        if not deleted:
-            raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Team not found")
-        return Response(status_code=HTTPStatus.NO_CONTENT)
+        try:
+            deleted = delete_team_use_case.execute(
+                DeleteTeamCommand(user_id=str(request.state.user_id), team_id=str(team_id))
+            )
+            if not deleted:
+                raise HTTPException(status_code=HTTPStatus.NOT_FOUND, detail="Team not found")
+            return Response(status_code=HTTPStatus.NO_CONTENT)
+        except TeamError as exc:
+            return JSONResponse(status_code=team_error_http_status(exc.code), content=exc.to_envelope())
+
+    @router.get("/{team_id}/stats", response_model=None)
+    def get_team_stats(team_id: UUID, request: Request):
+        try:
+            summary = get_team_stats_use_case.execute(user_id=str(request.state.user_id), team_id=str(team_id))
+            return {
+                "team": {
+                    "id": summary.team_id,
+                    "matches_played": summary.matches_played,
+                    "wins": summary.wins,
+                    "losses": summary.losses,
+                    "results": [
+                        {
+                            "match_id": result.match_id,
+                            "match_date": result.match_date.isoformat(),
+                            "home_team_id": result.home_team_id,
+                            "away_team_id": result.away_team_id,
+                            "winner_team_id": result.winner_team_id,
+                            "description": result.description,
+                            "result": result.result,
+                        }
+                        for result in summary.results
+                    ],
+                }
+            }
+        except MatchError as exc:
+            return JSONResponse(status_code=match_error_http_status(exc.code), content=exc.to_envelope())
 
     return router

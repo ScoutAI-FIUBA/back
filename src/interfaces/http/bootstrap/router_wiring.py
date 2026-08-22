@@ -6,6 +6,7 @@ from src.interfaces.http.bootstrap.dependencies import HttpDependencies
 from src.interfaces.http.routes.clip_collections_router import create_clip_collections_router
 from src.interfaces.http.routes.auth_router import create_auth_router
 from src.interfaces.http.routes.jobs_router import create_jobs_router
+from src.interfaces.http.routes.matches_router import create_matches_router
 from src.interfaces.http.routes.stats_router import create_stats_router
 from src.interfaces.http.routes.players_router import create_players_router
 from src.interfaces.http.routes.team_router import create_team_router
@@ -36,6 +37,7 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             list_teams_use_case=deps.list_teams_use_case,
             update_team_use_case=deps.update_team_use_case,
             delete_team_use_case=deps.delete_team_use_case,
+            get_team_stats_use_case=deps.get_team_stats_use_case,
         )
     )
     app.include_router(
@@ -46,6 +48,17 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             update_player_use_case=deps.update_player_use_case,
             delete_player_use_case=deps.delete_player_use_case,
             assign_player_team_use_case=deps.assign_player_team_use_case,
+            get_player_stats_use_case=deps.get_player_stats_use_case,
+            get_player_matches_use_case=deps.get_player_matches_use_case,
+        )
+    )
+    app.include_router(
+        create_matches_router(
+            create_match_use_case=deps.create_match_use_case,
+            list_matches_use_case=deps.list_matches_use_case,
+            get_match_use_case=deps.get_match_use_case,
+            replace_match_stats_use_case=deps.replace_match_stats_use_case,
+            get_match_stats_use_case=deps.get_match_stats_use_case,
         )
     )
     app.include_router(

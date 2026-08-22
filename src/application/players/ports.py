@@ -25,6 +25,10 @@ class PlayerRepositoryPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_by_id(self, *, player_id: str, owner_user_id: str) -> Player | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def update(
         self,
         *,

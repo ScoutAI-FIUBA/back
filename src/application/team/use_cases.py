@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src.application.team.ports import TeamClockPort, TeamIdGeneratorPort, TeamRepositoryPort
+from src.application.team.errors import TEAM_DELETE_CONFLICT, TEAM_HAS_MATCHES, TeamError
+from src.application.team.ports import (
+    TEAM_DELETE_CONFLICT_KIND_MATCH,
+    TeamClockPort,
+    TeamDeleteConflictError,
+    TeamIdGeneratorPort,
+    TeamRepositoryPort,
+)
 from src.domain.team.entities import Team
 
 
@@ -79,4 +86,12 @@ class DeleteTeamUseCase:
         self._teams = teams
 
     def execute(self, command: DeleteTeamCommand) -> bool:
-        return self._teams.delete(command.team_id, owner_user_id=command.user_id)
+        try:
+            return self._teams.delete(command.team_id, owner_user_id=command.user_id)
+        except TeamDeleteConflictError as exc:
+            if exc.kind == TEAM_DELETE_CONFLICT_KIND_MATCH:
+                raise TeamError(code=TEAM_HAS_MATCHES, message="Team has persisted matches") from exc
+            raise TeamError(
+                code=TEAM_DELETE_CONFLICT,
+                message="Team cannot be deleted because related records still reference it",
+            ) from exc

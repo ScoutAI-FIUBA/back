@@ -31,7 +31,9 @@ def _required_env() -> dict[str, str]:
 def _apply_migrations(database_url: str) -> None:
     migration_dirs = [
         Path("src/infrastructure/auth/migrations"),
+        Path("src/infrastructure/players/migrations"),
         Path("src/infrastructure/team/migrations"),
+        Path("src/infrastructure/matches/migrations"),
         Path("src/infrastructure/video/migrations"),
         Path("src/infrastructure/clip_collections/migrations"),
     ]

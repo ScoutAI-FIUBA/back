@@ -11,10 +11,12 @@ from src.application.players.use_cases import (
     AssignPlayerTeamUseCase,
     CreatePlayerUseCase,
     DeletePlayerUseCase,
+    GetPlayerStatsUseCase,
     ListPlayersByTeamUseCase,
     ListPlayersUseCase,
     UpdatePlayerUseCase,
 )
+from src.domain.matches.entities import Match
 from src.domain.players.entities import Player
 from src.interfaces.http.routes.players_router import create_players_router
 
@@ -47,9 +49,15 @@ class _PlayerRepo:
         player = self.by_id.get(player_id)
         if player is None or player.owner_user_id != owner_user_id:
             return None
-        updated = Player(id=player.id, owner_user_id=owner_user_id, team_id=player.team_id, **fields)
+        updated = Player(id=player.id, owner_user_id=owner_user_id, team_id=player.team_id, stats=player.stats, **fields)
         self.by_id[player_id] = updated
         return updated
+
+    def get_by_id(self, *, player_id: str, owner_user_id: str) -> Player | None:
+        player = self.by_id.get(player_id)
+        if player is None or player.owner_user_id != owner_user_id:
+            return None
+        return player
 
     def delete(self, player_id: str, *, owner_user_id: str) -> bool:
         player = self.by_id.get(player_id)
@@ -66,6 +74,7 @@ class _PlayerRepo:
             id=player.id, first_name=player.first_name, last_name=player.last_name,
             birth_date=player.birth_date, height_cm=player.height_cm, weight_kg=player.weight_kg,
             primary_position=player.primary_position, owner_user_id=owner_user_id, team_id=team_id,
+            jersey_number=player.jersey_number, stats=player.stats,
         )
         self.by_id[player_id] = updated
         return updated
@@ -100,6 +109,23 @@ class _Uow:
         yield
 
 
+class _GetPlayerMatchesUseCase:
+    def execute(self, *, user_id: str, player_id: str) -> list[Match]:
+        del user_id
+        return [
+            Match(
+                id="match-1",
+                owner_user_id="scout-1",
+                home_team_id=TEAM_ID,
+                away_team_id=OTHER_TEAM_ID,
+                winner_team_id=TEAM_ID,
+                match_date=date(2024, 1, 2),
+                description=f"for-{player_id}",
+                stats={"opaque": True},
+            )
+        ]
+
+
 def build_client(*, user_id: str = "scout-1", team_repo: _TeamRepo | None = None) -> tuple[TestClient, _PlayerRepo]:
     repo = _PlayerRepo()
     teams = team_repo or _TeamRepo()
@@ -118,6 +144,8 @@ def build_client(*, user_id: str = "scout-1", team_repo: _TeamRepo | None = None
             update_player_use_case=UpdatePlayerUseCase(players=repo, uow=_Uow()),
             delete_player_use_case=DeletePlayerUseCase(players=repo, uow=_Uow()),
             assign_player_team_use_case=AssignPlayerTeamUseCase(players=repo, teams=teams, uow=_Uow()),
+            get_player_stats_use_case=GetPlayerStatsUseCase(players=repo),
+            get_player_matches_use_case=_GetPlayerMatchesUseCase(),
         )
     )
     return TestClient(app), repo
@@ -190,6 +218,26 @@ class TestJerseyNumber(unittest.TestCase):
         self.assertIsNone(cleared.json()["player"]["jersey_number"])
 
 
+class TestPlayerStatsEndpoints(unittest.TestCase):
+    def test_get_player_stats_returns_global_stats_payload(self) -> None:
+        client, _ = build_client()
+        created = client.post("/players", json=VALID)
+        player_id = created.json()["player"]["id"]
+
+        response = client.get(f"/players/{player_id}/stats")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["player"]["stats"]["games_played"], 0)
+
+    def test_get_player_matches_returns_participation_matches(self) -> None:
+        client, _ = build_client()
+        created = client.post("/players", json=VALID)
+        player_id = created.json()["player"]["id"]
+
+        response = client.get(f"/players/{player_id}/matches")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["matches"][0]["description"], f"for-{player_id}")
+
+
 class TestPositionValidation(unittest.TestCase):
     def test_each_basketball_code_is_accepted(self) -> None:
         client, _ = build_client()
@@ -245,6 +293,8 @@ class TestOwnershipIsolation(unittest.TestCase):
                 update_player_use_case=UpdatePlayerUseCase(players=repo, uow=_Uow()),
                 delete_player_use_case=DeletePlayerUseCase(players=repo, uow=_Uow()),
                 assign_player_team_use_case=AssignPlayerTeamUseCase(players=repo, teams=_TeamRepo(), uow=_Uow()),
+                get_player_stats_use_case=GetPlayerStatsUseCase(players=repo),
+                get_player_matches_use_case=_GetPlayerMatchesUseCase(),
             )
         )
         client_b = TestClient(app)

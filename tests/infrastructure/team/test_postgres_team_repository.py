@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import unittest
+from unittest.mock import patch
 
+from src.application.team.ports import (
+    TEAM_DELETE_CONFLICT_KIND_GENERIC,
+    TEAM_DELETE_CONFLICT_KIND_MATCH,
+    TeamDeleteConflictError,
+)
 from src.domain.team.entities import Team
 from src.infrastructure.team.postgres_repository import PostgresTeamRepository
 
@@ -21,6 +27,8 @@ class _Cursor:
 
     def execute(self, query, params=None):
         self._connection.executed.append((" ".join(query.split()), params))
+        if self._connection.next_error is not None:
+            raise self._connection.next_error
         self._row = self._connection.next_row
         self.rowcount = self._connection.next_rowcount
 
@@ -34,6 +42,7 @@ class _Cursor:
 class _Connection:
     def __init__(self) -> None:
         self.executed = []
+        self.next_error = None
         self.next_row = None
         self.next_rows = []
         self.next_rowcount = 0
@@ -106,6 +115,26 @@ class TestPostgresTeamRepository(unittest.TestCase):
         exists = repo.is_owned_by(team_id="8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d", owner_user_id="user-1")
         self.assertTrue(exists)
         self.assertIn("SELECT 1 FROM teams", conn.executed[4][0])
+
+    def test_delete_maps_team_fk_conflicts_to_typed_delete_conflicts(self) -> None:
+        class _FakeForeignKeyViolation(Exception):
+            def __init__(self, constraint_name: str) -> None:
+                super().__init__(constraint_name)
+                self.diag = type("Diag", (), {"constraint_name": constraint_name})()
+
+        conn = _Connection()
+        repo = PostgresTeamRepository(connection=conn)
+
+        with patch("src.infrastructure.team.postgres_repository.ForeignKeyViolation", _FakeForeignKeyViolation):
+            conn.next_error = _FakeForeignKeyViolation("matches_home_team_id_fkey")
+            with self.assertRaises(TeamDeleteConflictError) as match_ctx:
+                repo.delete("8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d", owner_user_id="user-1")
+            self.assertEqual(match_ctx.exception.kind, TEAM_DELETE_CONFLICT_KIND_MATCH)
+
+            conn.next_error = _FakeForeignKeyViolation("videos_team_id_fkey")
+            with self.assertRaises(TeamDeleteConflictError) as generic_ctx:
+                repo.delete("8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d", owner_user_id="user-1")
+            self.assertEqual(generic_ctx.exception.kind, TEAM_DELETE_CONFLICT_KIND_GENERIC)
 
 
 if __name__ == "__main__":

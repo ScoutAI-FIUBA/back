@@ -33,10 +33,20 @@ from src.application.clip_collections.use_cases import (
     GetClipCollectionDetailUseCase,
     ListClipCollectionsUseCase,
 )
+from src.application.matches.use_cases import (
+    CreateMatchUseCase,
+    GetMatchStatsUseCase,
+    GetMatchUseCase,
+    GetPlayerMatchesUseCase,
+    GetTeamStatsUseCase,
+    ListMatchesUseCase,
+    ReplaceMatchStatsUseCase,
+)
 from src.application.players.use_cases import (
     AssignPlayerTeamUseCase,
     CreatePlayerUseCase,
     DeletePlayerUseCase,
+    GetPlayerStatsUseCase,
     ListPlayersByTeamUseCase,
     ListPlayersUseCase,
     UpdatePlayerUseCase,
@@ -86,6 +96,7 @@ from src.infrastructure.jobs.postgres_job_repository import (
     PostgresJobRepository,
     PostgresVideoLookup,
 )
+from src.infrastructure.matches.postgres_repository import PostgresMatchRepository
 from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
 from src.infrastructure.team.postgres_repository import PostgresTeamRepository
 from src.infrastructure.storage import R2Storage
@@ -203,11 +214,19 @@ class HttpDependencies:
     update_team_use_case: UpdateTeamUseCase
     delete_team_use_case: DeleteTeamUseCase
     create_player_use_case: CreatePlayerUseCase
+    get_player_stats_use_case: GetPlayerStatsUseCase
+    get_player_matches_use_case: GetPlayerMatchesUseCase
     list_players_use_case: ListPlayersUseCase
     list_players_by_team_use_case: ListPlayersByTeamUseCase
     update_player_use_case: UpdatePlayerUseCase
     delete_player_use_case: DeletePlayerUseCase
     assign_player_team_use_case: AssignPlayerTeamUseCase
+    create_match_use_case: CreateMatchUseCase
+    list_matches_use_case: ListMatchesUseCase
+    get_match_use_case: GetMatchUseCase
+    replace_match_stats_use_case: ReplaceMatchStatsUseCase
+    get_match_stats_use_case: GetMatchStatsUseCase
+    get_team_stats_use_case: GetTeamStatsUseCase
     init_video_upload_use_case: InitVideoUploadUseCase
     complete_video_upload_use_case: CompleteVideoUploadUseCase
     abort_video_upload_use_case: AbortVideoUploadUseCase
@@ -270,6 +289,7 @@ def build_http_dependencies(
     users_repo = PostgresUserRepository(connection=conn)
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)
     players_repo = PostgresPlayerRepository(connection=conn)
+    matches_repo = PostgresMatchRepository(connection=conn)
     teams_repo = PostgresTeamRepository(connection=conn)
     videos_repo = PostgresVideoRepository(connection=conn)
     clip_collections_repo = PostgresClipCollectionRepository(connection=conn)
@@ -357,6 +377,8 @@ def build_http_dependencies(
         update_team_use_case=UpdateTeamUseCase(teams=teams_repo),
         delete_team_use_case=DeleteTeamUseCase(teams=teams_repo),
         create_player_use_case=CreatePlayerUseCase(players=players_repo, ids=ids, uow=uow),
+        get_player_stats_use_case=GetPlayerStatsUseCase(players=players_repo),
+        get_player_matches_use_case=GetPlayerMatchesUseCase(matches=matches_repo, players=players_repo),
         list_players_use_case=ListPlayersUseCase(players=players_repo),
         list_players_by_team_use_case=ListPlayersByTeamUseCase(players=players_repo),
         update_player_use_case=UpdatePlayerUseCase(players=players_repo, uow=uow),
@@ -366,6 +388,12 @@ def build_http_dependencies(
             teams=teams_repo,
             uow=uow,
         ),
+        create_match_use_case=CreateMatchUseCase(matches=matches_repo, teams=teams_repo, ids=ids, uow=uow),
+        list_matches_use_case=ListMatchesUseCase(matches=matches_repo, teams=teams_repo),
+        get_match_use_case=GetMatchUseCase(matches=matches_repo),
+        replace_match_stats_use_case=ReplaceMatchStatsUseCase(matches=matches_repo, players=players_repo, ids=ids, uow=uow),
+        get_match_stats_use_case=GetMatchStatsUseCase(matches=matches_repo),
+        get_team_stats_use_case=GetTeamStatsUseCase(matches=matches_repo, teams=teams_repo),
         init_video_upload_use_case=InitVideoUploadUseCase(
             videos=videos_repo,
             storage=video_storage,

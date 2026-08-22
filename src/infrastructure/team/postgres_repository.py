@@ -8,9 +8,28 @@ This module isolates SQL statements and row mapping from application use cases.
 from dataclasses import asdict
 from typing import Any, Protocol
 
+from psycopg.errors import ForeignKeyViolation
 from psycopg.rows import dict_row
 
+from src.application.team.ports import (
+    TEAM_DELETE_CONFLICT_KIND_GENERIC,
+    TEAM_DELETE_CONFLICT_KIND_MATCH,
+    TeamDeleteConflictError,
+)
 from src.domain.team.entities import Team
+
+
+_MATCH_DELETE_CONSTRAINTS = {
+    "matches_home_team_id_fkey",
+    "matches_away_team_id_fkey",
+    "matches_winner_team_id_fkey",
+}
+
+
+def _is_match_delete_conflict(exc: ForeignKeyViolation) -> bool:
+    diag = getattr(exc, "diag", None)
+    constraint_name = getattr(diag, "constraint_name", None)
+    return constraint_name in _MATCH_DELETE_CONSTRAINTS
 
 
 class CursorLike(Protocol):
@@ -104,10 +123,21 @@ class PostgresTeamRepository:
 
     def delete(self, team_id: str, *, owner_user_id: str) -> bool:
         with self._connection.cursor() as cur:
-            cur.execute(
-                "DELETE FROM teams WHERE id = %(id)s AND owner_user_id = %(owner)s",
-                {"id": team_id, "owner": owner_user_id},
-            )
+            try:
+                cur.execute(
+                    "DELETE FROM teams WHERE id = %(id)s AND owner_user_id = %(owner)s",
+                    {"id": team_id, "owner": owner_user_id},
+                )
+            except ForeignKeyViolation as exc:
+                if _is_match_delete_conflict(exc):
+                    raise TeamDeleteConflictError(
+                        "team has persisted matches",
+                        kind=TEAM_DELETE_CONFLICT_KIND_MATCH,
+                    ) from exc
+                raise TeamDeleteConflictError(
+                    "team has related records",
+                    kind=TEAM_DELETE_CONFLICT_KIND_GENERIC,
+                ) from exc
             return cur.rowcount > 0
 
     def is_owned_by(self, *, team_id: str, owner_user_id: str) -> bool:

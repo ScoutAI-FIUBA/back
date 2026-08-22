@@ -33,6 +33,7 @@ def _apply_migrations(database_url: str) -> None:
         Path("src/infrastructure/auth/migrations"),
         Path("src/infrastructure/players/migrations"),
         Path("src/infrastructure/team/migrations"),
+        Path("src/infrastructure/matches/migrations"),
         Path("src/infrastructure/video/migrations"),
     ]
     with psycopg.connect(database_url) as conn:

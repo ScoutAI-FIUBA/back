@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date
+import json
 from typing import Any, Protocol
 
 from psycopg.rows import dict_row
@@ -37,6 +38,7 @@ def _row_to_player(row: dict[str, Any] | None) -> Player | None:
         jersey_number=row.get("jersey_number"),
         owner_user_id=row["owner_user_id"],
         team_id=row.get("team_id"),
+        stats=dict(row.get("stats") or {}),
     )
 
 
@@ -49,23 +51,33 @@ class PostgresPlayerRepository:
         self._connection = connection
 
     def create(self, player: Player) -> Player:
+        params = asdict(player)
+        params["stats"] = json.dumps(player.stats)
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 INSERT INTO players (
                     id, first_name, last_name, birth_date, height_cm, weight_kg,
-                    primary_position, jersey_number, owner_user_id, team_id
+                    primary_position, jersey_number, owner_user_id, team_id, stats
                 ) VALUES (
                     %(id)s, %(first_name)s, %(last_name)s, %(birth_date)s, %(height_cm)s,
                     %(weight_kg)s, %(primary_position)s, %(jersey_number)s, %(owner_user_id)s,
-                    %(team_id)s
+                    %(team_id)s, %(stats)s::jsonb
                 )
                 RETURNING *
                 """,
-                asdict(player),
+                params,
             )
             row = cur.fetchone()
         return _row_to_player(row) or player
+
+    def get_by_id(self, *, player_id: str, owner_user_id: str) -> Player | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT * FROM players WHERE id = %(id)s AND owner_user_id = %(owner)s",
+                {"id": player_id, "owner": owner_user_id},
+            )
+            return _row_to_player(cur.fetchone())
 
     def list_by_owner(self, *, owner_user_id: str) -> list[Player]:
         with self._connection.cursor(row_factory=dict_row) as cur:
