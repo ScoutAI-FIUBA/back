@@ -3,13 +3,22 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import date
 import json
+import re
 from typing import Any, Protocol
 
 from psycopg.rows import dict_row
 
-from src.domain.players.entities import Player
+from src.domain.players.entities import Player, PlayerStats, build_empty_player_stats
 
 _ORDER = "ORDER BY last_name ASC, first_name ASC"
+_BOX_SCORE_STATS = ("points", "rebounds", "assists", "steals", "blocks", "turnovers")
+_SHOOTING_STATS = {
+    "field_goals": ("field_goals",),
+    "two_point": ("two_point", "two_points"),
+    "three_point": ("three_point", "three_points"),
+    "free_throws": ("free_throws",),
+}
+_INT_STRING_RE = re.compile(r"^[+-]?\d+$")
 
 
 class CursorLike(Protocol):
@@ -22,6 +31,67 @@ class CursorLike(Protocol):
 
 class ConnectionLike(Protocol):
     def cursor(self, *args: Any, **kwargs: Any) -> CursorLike: ...
+
+
+def _as_mapping(value: object) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_int(value: object) -> int:
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not _INT_STRING_RE.fullmatch(stripped):
+            return 0
+        try:
+            return int(stripped)
+        except ValueError:
+            return 0
+    return 0
+
+
+def _canonicalize_player_stats(stats: object) -> PlayerStats:
+    canonical = build_empty_player_stats()
+    source = _as_mapping(stats)
+
+    canonical["games_played"] = _as_int(source.get("games_played"))
+
+    record = _as_mapping(source.get("record"))
+    canonical["record"] = {
+        "wins": _as_int(record.get("wins", source.get("wins"))),
+        "losses": _as_int(record.get("losses", source.get("losses"))),
+    }
+
+    for stat_name in _BOX_SCORE_STATS:
+        section = _as_mapping(source.get(stat_name))
+        canonical[stat_name] = {
+            "total": _as_int(section.get("total", source.get(stat_name))),
+            "per_game": _as_int(section.get("per_game")),
+        }
+
+    for stat_name, aliases in _SHOOTING_STATS.items():
+        section = {}
+        for alias in aliases:
+            if alias in source:
+                section = _as_mapping(source.get(alias))
+                break
+        per_game = _as_mapping(section.get("per_game"))
+        canonical[stat_name] = {
+            "made_total": _as_int(section.get("made_total")),
+            "attempted_total": _as_int(section.get("attempted_total")),
+            "per_game": {
+                "made": _as_int(per_game.get("made")),
+                "attempted": _as_int(per_game.get("attempted")),
+            },
+            "percentage": _as_int(section.get("percentage")),
+        }
+
+    return canonical
 
 
 def _row_to_player(row: dict[str, Any] | None) -> Player | None:
@@ -38,7 +108,7 @@ def _row_to_player(row: dict[str, Any] | None) -> Player | None:
         jersey_number=row.get("jersey_number"),
         owner_user_id=row["owner_user_id"],
         team_id=row.get("team_id"),
-        stats=dict(row.get("stats") or {}),
+        stats=_canonicalize_player_stats(row.get("stats")),
     )
 
 
@@ -52,7 +122,7 @@ class PostgresPlayerRepository:
 
     def create(self, player: Player) -> Player:
         params = asdict(player)
-        params["stats"] = json.dumps(player.stats)
+        params["stats"] = json.dumps(_canonicalize_player_stats(player.stats))
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """

@@ -17,7 +17,7 @@ from src.application.players.use_cases import (
     UpdatePlayerUseCase,
 )
 from src.domain.matches.entities import Match
-from src.domain.players.entities import Player
+from src.domain.players.entities import EMPTY_PLAYER_STATS, Player
 from src.interfaces.http.routes.players_router import create_players_router
 
 TEAM_ID = "00000000-0000-4000-8000-000000000010"
@@ -219,14 +219,25 @@ class TestJerseyNumber(unittest.TestCase):
 
 
 class TestPlayerStatsEndpoints(unittest.TestCase):
-    def test_get_player_stats_returns_global_stats_payload(self) -> None:
+    def test_get_player_stats_returns_canonical_nested_stats_payload(self) -> None:
         client, _ = build_client()
         created = client.post("/players", json=VALID)
         player_id = created.json()["player"]["id"]
 
         response = client.get(f"/players/{player_id}/stats")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["player"]["stats"]["games_played"], 0)
+        stats = response.json()["player"]["stats"]
+        self.assertEqual(stats, EMPTY_PLAYER_STATS)
+        self.assertEqual(set(stats), set(EMPTY_PLAYER_STATS))
+        self.assertEqual(stats["record"], {"wins": 0, "losses": 0})
+        self.assertEqual(stats["field_goals"]["per_game"], {"made": 0, "attempted": 0})
+        self.assertIn("two_point", stats)
+        self.assertIn("three_point", stats)
+        self.assertNotIn("wins", stats)
+        self.assertNotIn("losses", stats)
+        self.assertNotIn("two_points", stats)
+        self.assertNotIn("three_points", stats)
+        self.assertNotIsInstance(stats["points"], int)
 
     def test_get_player_matches_returns_participation_matches(self) -> None:
         client, _ = build_client()

@@ -11,21 +11,42 @@ from dataclasses import dataclass, field
 from datetime import date
 
 
-EMPTY_PLAYER_STATS: dict[str, int] = {
-    "games_played": 0,
-    "wins": 0,
-    "losses": 0,
-    "points": 0,
-    "rebounds": 0,
-    "assists": 0,
-    "steals": 0,
-    "blocks": 0,
-    "turnovers": 0,
-}
+JSONPrimitive = None | bool | int | float | str
+JSONValue = JSONPrimitive | list["JSONValue"] | dict[str, "JSONValue"]
+PlayerStats = dict[str, JSONValue]
 
 
-def build_empty_player_stats() -> dict[str, int]:
-    return dict(EMPTY_PLAYER_STATS)
+def _build_total_stat() -> dict[str, int]:
+    return {"total": 0, "per_game": 0}
+
+
+def _build_shooting_stat() -> dict[str, JSONValue]:
+    return {
+        "made_total": 0,
+        "attempted_total": 0,
+        "per_game": {"made": 0, "attempted": 0},
+        "percentage": 0,
+    }
+
+
+def build_empty_player_stats() -> PlayerStats:
+    return {
+        "games_played": 0,
+        "record": {"wins": 0, "losses": 0},
+        "points": _build_total_stat(),
+        "rebounds": _build_total_stat(),
+        "assists": _build_total_stat(),
+        "steals": _build_total_stat(),
+        "blocks": _build_total_stat(),
+        "turnovers": _build_total_stat(),
+        "field_goals": _build_shooting_stat(),
+        "two_point": _build_shooting_stat(),
+        "three_point": _build_shooting_stat(),
+        "free_throws": _build_shooting_stat(),
+    }
+
+
+EMPTY_PLAYER_STATS: PlayerStats = build_empty_player_stats()
 
 
 @dataclass(frozen=True)
@@ -49,4 +70,4 @@ class Player:
     jersey_number: str | None = None
     owner_user_id: str = ""
     team_id: str | None = None
-    stats: dict[str, int] = field(default_factory=build_empty_player_stats)
+    stats: PlayerStats = field(default_factory=build_empty_player_stats)

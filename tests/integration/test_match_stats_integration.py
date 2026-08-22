@@ -3,10 +3,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from uuid import uuid4
+import json
 
 from fastapi.testclient import TestClient
 import psycopg
 import pytest
+
+from src.domain.players.entities import EMPTY_PLAYER_STATS
 
 
 pytestmark = pytest.mark.integration
@@ -115,7 +118,7 @@ def test_match_stats_foundation_flow(client: TestClient) -> None:
 
     player_stats = client.get(f"/players/{player['id']}/stats")
     assert player_stats.status_code == 200
-    assert player_stats.json()["player"]["stats"]["games_played"] == 0
+    assert player_stats.json()["player"]["stats"] == EMPTY_PLAYER_STATS
 
     created_match = client.post(
         "/matches",
@@ -166,6 +169,10 @@ def test_match_stats_foundation_flow(client: TestClient) -> None:
     assert fetched_stats.status_code == 200
     assert fetched_stats.json()["participants"][0]["player_id"] == player["id"]
 
+    player_stats_after_match = client.get(f"/players/{player['id']}/stats")
+    assert player_stats_after_match.status_code == 200
+    assert player_stats_after_match.json()["player"]["stats"] == EMPTY_PLAYER_STATS
+
     player_matches = client.get(f"/players/{player['id']}/matches")
     assert player_matches.status_code == 200
     assert player_matches.json()["matches"][0]["id"] == match_id
@@ -180,3 +187,58 @@ def test_match_stats_foundation_flow(client: TestClient) -> None:
     team_delete = client.delete(f"/teams/{home_team_id}")
     assert team_delete.status_code == 409
     assert team_delete.json()["error"]["code"] == "TEAM_HAS_MATCHES"
+
+
+def test_player_stats_upgrade_migration_backfills_legacy_rows(client: TestClient) -> None:
+    env = _required_env()
+    legacy_stats = {
+        "games_played": True,
+        "wins": "8",
+        "losses": False,
+        "points": 156.8,
+        "rebounds": 44,
+        "assists": 31,
+        "steals": 9,
+        "blocks": 3,
+        "turnovers": 17,
+        "two_points": {
+            "made_total": "12",
+            "attempted_total": 20.2,
+            "per_game": {"made": "4", "attempted": True},
+            "percentage": "bad",
+        },
+    }
+    create_player = client.post("/players", json=_player_payload(f"Legacy{uuid4().hex[:6]}"))
+    assert create_player.status_code == 201
+    player_id = create_player.json()["player"]["id"]
+
+    with psycopg.connect(env["DATABASE_URL"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE players SET stats = %s::jsonb WHERE id = %s",
+                (json.dumps(legacy_stats), player_id),
+            )
+            cur.execute(Path("src/infrastructure/players/migrations/003_player_stats_contract_upgrade.sql").read_text(encoding="utf-8"))
+        conn.commit()
+
+    with psycopg.connect(env["DATABASE_URL"]) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT stats FROM players WHERE id = %s", (player_id,))
+            row = cur.fetchone()
+
+    assert row is not None
+    stats = row[0]
+    assert stats["games_played"] == 1
+    assert stats["record"] == {"wins": 8, "losses": 0}
+    assert stats["points"] == {"total": 156, "per_game": 0}
+    assert stats["rebounds"] == {"total": 44, "per_game": 0}
+    assert stats["two_point"] == {
+        "made_total": 12,
+        "attempted_total": 20,
+        "per_game": {"made": 4, "attempted": 1},
+        "percentage": 0,
+    }
+    assert stats["field_goals"] == EMPTY_PLAYER_STATS["field_goals"]
+    assert "wins" not in stats
+    assert "losses" not in stats
+    assert "two_points" not in stats

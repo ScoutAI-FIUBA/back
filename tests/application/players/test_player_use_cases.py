@@ -53,9 +53,19 @@ class TestPlayerUseCases(unittest.TestCase):
         )
 
         self.assertEqual(player.stats, EMPTY_PLAYER_STATS)
+        self.assertEqual(set(player.stats), set(EMPTY_PLAYER_STATS))
+        self.assertEqual(set(player.stats["record"]), {"wins", "losses"})
+        self.assertEqual(set(player.stats["two_point"]), {"made_total", "attempted_total", "per_game", "percentage"})
+        self.assertIsNot(player.stats, EMPTY_PLAYER_STATS)
+        self.assertIsNot(player.stats["record"], EMPTY_PLAYER_STATS["record"])
 
     def test_get_player_stats_returns_persisted_stats_only(self) -> None:
         repo = _Repo()
+        persisted_stats = {
+            **EMPTY_PLAYER_STATS,
+            "points": {"total": 99, "per_game": 21},
+            "record": {"wins": 7, "losses": 2},
+        }
         repo.by_id["player-1"] = Player(
             id="player-1",
             first_name="A",
@@ -65,11 +75,11 @@ class TestPlayerUseCases(unittest.TestCase):
             weight_kg=75,
             primary_position="PG",
             owner_user_id="user-1",
-            stats={**EMPTY_PLAYER_STATS, "points": 99},
+            stats=persisted_stats,
         )
 
         player = GetPlayerStatsUseCase(players=repo).execute(user_id="user-1", player_id="player-1")
-        self.assertEqual(player.stats["points"], 99)
+        self.assertEqual(player.stats, persisted_stats)
 
     def test_get_player_stats_raises_not_found_for_other_owner(self) -> None:
         repo = _Repo()
