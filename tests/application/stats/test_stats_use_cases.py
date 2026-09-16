@@ -16,7 +16,22 @@ from src.application.jobs.errors import (
     JobError,
 )
 from src.application.stats.ports import ArtifactReadError
-from src.application.stats.use_cases import GetCourtPositionsUseCase, GetGameStatsUseCase
+from dataclasses import dataclass
+
+from src.application.stats.use_cases import (
+    GetCourtPositionsUseCase,
+    GetGameStatsUseCase,
+    GetShotChartUseCase,
+    GetTeamSidesUseCase,
+)
+
+
+@dataclass
+class RosterPlayer:
+    id: str
+    first_name: str
+    last_name: str
+    jersey_number: str | None
 from src.domain.jobs.entities import JobStatus, ProcessingJob
 
 _UNSET = object()
@@ -26,13 +41,21 @@ TEAM_ID = "11111111-1111-1111-1111-111111111111"
 JOB_ID = "33333333-3333-3333-3333-333333333333"
 
 
-def build_job(status: JobStatus = JobStatus.DONE, results_key: str | None = "results/t/j"):
+def build_job(
+    status: JobStatus = JobStatus.DONE,
+    results_key: str | None = "results/t/j",
+    our_team_side: int | None = None,
+    job_id: str = JOB_ID,
+    video_id: str = "v1",
+    features: dict | None = None,
+):
     now = datetime.now(timezone.utc)
     return ProcessingJob(
-        id=JOB_ID, video_id="v1", team_id=TEAM_ID, requested_by_user_id=USER_ID,
+        id=job_id, video_id=video_id, team_id=TEAM_ID, requested_by_user_id=USER_ID,
         status=status, external_job_id=None, results_key=results_key,
         error_message=None, progress_percent=100,
         started_at=now, finished_at=now, created_at=now, updated_at=now,
+        our_team_side=our_team_side, features=features,
     )
 
 
@@ -47,6 +70,18 @@ class FakeJobs:
 class FakeAccess:
     def assert_access(self, **_kwargs):
         return None
+
+
+class FakeRoster:
+    """Serves the scout's roster players for the linking-by-number step."""
+
+    def __init__(self, players=None):
+        self.players = players or []
+        self.calls = 0
+
+    def list_by_owner_and_team(self, **_kwargs):
+        self.calls += 1
+        return self.players
 
 
 class FakeReader:
@@ -80,7 +115,7 @@ NUMBERS = {"tracks": [{"track_id": 9, "status": "confirmed", "number": "22"}]}
 
 
 class TestGetGameStats(unittest.TestCase):
-    def build(self, *, job=_UNSET, reader=None):
+    def build(self, *, job=_UNSET, reader=None, roster=None):
         return GetGameStatsUseCase(
             jobs=FakeJobs(build_job() if job is _UNSET else job),
             artifacts=reader or FakeReader({
@@ -89,6 +124,7 @@ class TestGetGameStats(unittest.TestCase):
                 "numbers.json": NUMBERS,
             }),
             team_access=FakeAccess(),
+            roster=roster or FakeRoster(),
         )
 
     def test_returns_a_box_score(self) -> None:
@@ -143,6 +179,201 @@ class TestGetGameStats(unittest.TestCase):
         )
         self.assertEqual(result["teams"][0]["points"], 2)
         self.assertEqual(result["players"][0]["display_name"], "Player 9")
+
+
+class TestGetShotChart(unittest.TestCase):
+    def build(self, *, job=_UNSET, reader=None, roster=None):
+        return GetShotChartUseCase(
+            jobs=FakeJobs(build_job() if job is _UNSET else job),
+            artifacts=reader or FakeReader({
+                "projected_shots.json": SHOTS,
+                "teams.json": TEAMS,
+                "numbers.json": NUMBERS,
+            }),
+            team_access=FakeAccess(),
+            roster=roster or FakeRoster(),
+        )
+
+    def test_returns_markers_with_court_geometry(self) -> None:
+        result = self.build().execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(len(result["shots"]), 1)
+        self.assertEqual(result["shots"][0]["result"], "made")
+        self.assertEqual(result["court"]["length_m"], 28.0)
+
+    def test_track_id_filter_is_passed_through(self) -> None:
+        result = self.build().execute(
+            user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID, track_id=999
+        )
+        self.assertEqual(result["shots"], [])
+        self.assertEqual(result["coverage"]["filtered_to_track_id"], 999)
+
+    def test_never_reads_the_large_track_dump(self) -> None:
+        reader = FakeReader({"projected_shots.json": SHOTS, "teams.json": TEAMS})
+        self.build(reader=reader).execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertNotIn("tracks.jsonl", reader.requested)
+
+    def test_unfinished_job_is_rejected(self) -> None:
+        use_case = self.build(job=build_job(status=JobStatus.RUNNING))
+        with self.assertRaises(JobError) as ctx:
+            use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(ctx.exception.code, JOB_NOT_FINISHED)
+
+    def test_job_with_no_output_at_all_is_reported(self) -> None:
+        use_case = self.build(reader=FakeReader({}))
+        with self.assertRaises(JobError) as ctx:
+            use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(ctx.exception.code, RESULTS_NOT_AVAILABLE)
+
+
+class TestRosterLinkingThroughUseCase(unittest.TestCase):
+    """The chosen side plus the roster resolve real names in the stats read."""
+
+    ROSTER = [RosterPlayer(id="p-22", first_name="Jane", last_name="Doe", jersey_number="22")]
+
+    def build(self, *, side):
+        return GetGameStatsUseCase(
+            jobs=FakeJobs(build_job(our_team_side=side)),
+            artifacts=FakeReader({
+                "projected_shots.json": SHOTS, "teams.json": TEAMS, "numbers.json": NUMBERS,
+            }),
+            team_access=FakeAccess(),
+            roster=FakeRoster(self.ROSTER),
+        )
+
+    def test_chosen_side_gets_real_names(self) -> None:
+        result = self.build(side=1).execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(result["our_team_side"], 1)
+        linked = next(p for p in result["players"] if p["track_id"] == 9)
+        self.assertEqual(linked["display_name"], "Jane Doe")
+
+    def test_no_chosen_side_means_the_roster_is_never_read(self) -> None:
+        roster = FakeRoster(self.ROSTER)
+        GetGameStatsUseCase(
+            jobs=FakeJobs(build_job(our_team_side=None)),
+            artifacts=FakeReader({
+                "projected_shots.json": SHOTS, "teams.json": TEAMS, "numbers.json": NUMBERS,
+            }),
+            team_access=FakeAccess(),
+            roster=roster,
+        ).execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        # Nothing to link against without a side, so the roster is left untouched.
+        self.assertEqual(roster.calls, 0)
+
+
+class TestGetTeamSides(unittest.TestCase):
+    TEAMS2 = {"assignments": [
+        {"track_id": 10, "team_id": 1}, {"track_id": 11, "team_id": 1},
+        {"track_id": 20, "team_id": 0},
+    ]}
+    NUMBERS2 = {"tracks": [
+        {"track_id": 10, "status": "confirmed", "number": "7"},
+        {"track_id": 11, "status": "confirmed", "number": "9"},
+        {"track_id": 20, "status": "confirmed", "number": "23"},
+    ]}
+    ROSTER = [
+        RosterPlayer(id="p7", first_name="Jaylen", last_name="Brown", jersey_number="7"),
+        RosterPlayer(id="p9", first_name="Derrick", last_name="White", jersey_number="9"),
+    ]
+
+    def build(self, *, roster=None):
+        return GetTeamSidesUseCase(
+            jobs=FakeJobs(build_job()),
+            artifacts=FakeReader({"teams.json": self.TEAMS2, "numbers.json": self.NUMBERS2}),
+            team_access=FakeAccess(),
+            roster=FakeRoster(self.ROSTER if roster is None else roster),
+        )
+
+    def test_suggests_the_side_that_matches_our_roster(self) -> None:
+        result = self.build().execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(result["suggested_team_side"], 1)
+        side1 = next(s for s in result["sides"] if s["team_side"] == 1)
+        self.assertEqual(side1["roster_matches"], 2)
+
+    def test_no_roster_overlap_makes_no_suggestion(self) -> None:
+        empty = [RosterPlayer(id="p0", first_name="No", last_name="One", jersey_number="55")]
+        result = self.build(roster=empty).execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertIsNone(result["suggested_team_side"])
+
+    def test_reports_the_current_selection(self) -> None:
+        use_case = GetTeamSidesUseCase(
+            jobs=FakeJobs(build_job(our_team_side=1)),
+            artifacts=FakeReader({"teams.json": self.TEAMS2, "numbers.json": self.NUMBERS2}),
+            team_access=FakeAccess(),
+            roster=FakeRoster(self.ROSTER),
+        )
+        result = use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(result["our_team_side"], 1)
+
+
+class FakeJobsForSimilar:
+    def __init__(self, target, others):
+        self._target = target
+        self._all = [target, *others]
+        self.set_features_calls = 0
+
+    def get_by_id(self, *, job_id, **_kwargs):
+        return next((j for j in self._all if j.id == job_id), None)
+
+    def list_done_by_team(self, **_kwargs):
+        return self._all
+
+    def set_features(self, *, job_id, team_id, features):
+        self.set_features_calls += 1
+        return None
+
+
+def make_features(*, shot_points, rows):
+    from src.domain.stats.similarity import build_clip_features
+    shots_doc = {"shots": [{"shot_origin_court_xy_m": xy, "outcome": o} for xy, o in shot_points]}
+    position_rows = [{"frame_index": f, "track_id": t, "court_xy_m": [x, y]} for f, t, x, y in rows]
+    return build_clip_features(shots_document=shots_doc, position_rows=position_rows)
+
+
+class TestGetSimilarClips(unittest.TestCase):
+    def test_ranks_more_similar_clips_higher_and_excludes_self(self) -> None:
+        from src.application.stats.use_cases import GetSimilarClipsUseCase
+
+        rim = make_features(shot_points=[([2.5, 7.5], "made")], rows=[(0, 1, 2.0, 7.5), (1, 1, 2.2, 7.5)])
+        arc = make_features(shot_points=[([9.5, 7.5], "missed")], rows=[(0, 1, 25.0, 1.0), (1, 1, 26.0, 14.0)])
+
+        target = build_job(job_id=JOB_ID, features=rim)
+        twin = build_job(job_id="twin", video_id="v-twin", features=rim)
+        far = build_job(job_id="far", video_id="v-far", features=arc)
+        jobs = FakeJobsForSimilar(target, [twin, far])
+
+        use_case = GetSimilarClipsUseCase(
+            jobs=jobs, artifacts=FakeReader({}), team_access=FakeAccess()
+        )
+        result = use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+
+        ids = [r["job_id"] for r in result["results"]]
+        self.assertEqual(ids, ["twin", "far"])
+        self.assertNotIn(JOB_ID, ids)
+        self.assertGreater(result["results"][0]["score"], result["results"][1]["score"])
+
+    def test_cached_features_are_not_recomputed(self) -> None:
+        from src.application.stats.use_cases import GetSimilarClipsUseCase
+
+        feats = make_features(shot_points=[([2.5, 7.5], "made")], rows=[(0, 1, 2.0, 7.5)])
+        target = build_job(job_id=JOB_ID, features=feats)
+        other = build_job(job_id="o2", video_id="v2", features=feats)
+        jobs = FakeJobsForSimilar(target, [other])
+        GetSimilarClipsUseCase(
+            jobs=jobs, artifacts=FakeReader({}), team_access=FakeAccess()
+        ).execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(jobs.set_features_calls, 0)
+
+    def test_limit_caps_the_results(self) -> None:
+        from src.application.stats.use_cases import GetSimilarClipsUseCase
+
+        feats = make_features(shot_points=[([2.5, 7.5], "made")], rows=[(0, 1, 2.0, 7.5)])
+        target = build_job(job_id=JOB_ID, features=feats)
+        others = [build_job(job_id=f"o{i}", video_id=f"v{i}", features=feats) for i in range(4)]
+        jobs = FakeJobsForSimilar(target, others)
+        result = GetSimilarClipsUseCase(
+            jobs=jobs, artifacts=FakeReader({}), team_access=FakeAccess()
+        ).execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID, limit=2)
+        self.assertEqual(len(result["results"]), 2)
 
 
 def position_row(frame_index: int, track_id: int, x: float, y: float) -> dict:
@@ -207,6 +438,26 @@ class TestGetCourtPositions(unittest.TestCase):
         )
         counts = {p["track_id"]: len(p["positions"]) for p in result["players"]}
         self.assertEqual(counts, {9: 2, 5: 2})
+
+    def test_movement_reports_distance_and_average_position(self) -> None:
+        rows = [position_row(0, 9, 0.0, 0.0), position_row(4, 9, 3.0, 4.0)]
+        result = self.build(rows).execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        movement = result["players"][0]["movement"]
+        self.assertEqual(movement["distance_m"], 5.0)
+        self.assertEqual(movement["samples"], 2)
+        self.assertEqual(movement["average_position"], {"x_m": 1.5, "y_m": 2.0})
+
+    def test_distance_is_measured_over_the_full_path_not_the_sampled_one(self) -> None:
+        """Summing a thinned path would understate how far a player ran."""
+
+        rows = [position_row(i, 9, float(i), 0.0) for i in range(6)]
+        result = self.build(rows).execute(
+            user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID, sample_every=5
+        )
+        player = result["players"][0]
+        self.assertEqual(len(player["positions"]), 2)
+        self.assertEqual(player["movement"]["distance_m"], 5.0)
+        self.assertEqual(player["movement"]["samples"], 6)
 
     def test_rows_without_a_track_are_ignored(self) -> None:
         rows = [{"frame_index": 0, "court_xy_m": [5.0, 7.5]}, position_row(0, 9, 5.0, 7.5)]

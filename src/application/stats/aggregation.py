@@ -11,12 +11,13 @@ rule here is testable against a fixture.
 
 from __future__ import annotations
 
-from src.domain.stats.court import describe_shot, is_on_court
+from src.domain.stats.court import court_reference, describe_shot, is_on_court
 from src.domain.stats.entities import GameStats, PlayerStats, TeamStats
 
 # Outcomes the pipeline reports for a shot. Anything else (notably "unknown")
 # still counts as an attempt but never as a make.
 MADE = "made"
+MISSED = "missed"
 
 
 def team_by_track(teams_document: dict | None) -> dict[int, int]:
@@ -57,13 +58,41 @@ def number_by_track(numbers_document: dict | None) -> dict[int, str]:
     return mapping
 
 
+def _link_roster(
+    player: PlayerStats, *, roster: dict[str, dict] | None, our_team_side: int | None
+) -> None:
+    """Tie a track to a roster player, when it is one of the scout's own.
+
+    Only the side the scout marked as their team is linked, and only by a
+    confirmed jersey number: the opponent has no roster here, so their tracks
+    stay anonymous.
+    """
+
+    if roster is None or our_team_side is None:
+        return
+    if player.team_id != our_team_side or player.jersey_number is None:
+        return
+    match = roster.get(player.jersey_number)
+    if match is not None:
+        player.roster_player_id = match["player_id"]
+        player.roster_name = match["name"]
+
+
 def build_game_stats(
     *,
     shots_document: dict | None,
     teams_document: dict | None,
     numbers_document: dict | None,
+    roster: dict[str, dict] | None = None,
+    our_team_side: int | None = None,
 ) -> GameStats:
-    """Assemble the box score for one processed video."""
+    """Assemble the box score for one processed video.
+
+    When `roster` (jersey number -> roster player) and `our_team_side` are given,
+    tracks on that side are tied to the scout's real players by number; without
+    them every track stays anonymous, which is the behaviour before a side is
+    picked.
+    """
 
     teams_of = team_by_track(teams_document)
     numbers_of = number_by_track(numbers_document)
@@ -117,6 +146,10 @@ def build_game_stats(
                 "team_id": None if team_id is None else int(team_id),
                 "jersey_number": None if track_id is None else numbers_of.get(track_id),
                 "made": made,
+                # The raw outcome is kept so a shot chart can tell a miss (draw
+                # red) from an undetermined result (draw neither), which the
+                # made boolean alone collapses together.
+                "outcome": shot.get("outcome"),
                 "points": location.points,
                 "zone": location.zone,
                 "distance_m": location.distance_m,
@@ -145,7 +178,21 @@ def build_game_stats(
         if player.team_id is not None and player.team_id in teams:
             teams[player.team_id].player_count += 1
 
+    for player in players.values():
+        _link_roster(player, roster=roster, our_team_side=our_team_side)
+
+    # Now that tracks carry a roster identity, stamp it onto their shot rows too,
+    # so a shot chart can label a marker without a second lookup.
+    roster_of = {
+        track_id: (player.roster_player_id, player.roster_name)
+        for track_id, player in players.items()
+    }
+    for row in shot_rows:
+        linked = roster_of.get(row["track_id"], (None, None))
+        row["roster_player_id"], row["roster_name"] = linked
+
     identified = sum(1 for player in players.values() if player.jersey_number)
+    linked_count = sum(1 for player in players.values() if player.roster_player_id)
     return GameStats(
         teams=[teams[key] for key in sorted(teams)],
         players=sorted(players.values(), key=lambda p: (p.team_id or -1, p.track_id)),
@@ -159,8 +206,101 @@ def build_game_stats(
             # TODO(jersey-numbers): low today; UI can watch this ratio to decide
             # whether to show numbers or fall back to "Player N".
             "players_with_jersey_number": identified,
+            # How many tracks were tied to a real roster player (own team only).
+            "players_linked_to_roster": linked_count,
             # Stated plainly so the interface never implies a complete stat line.
             "measures": ["shooting"],
             "not_measured": ["rebounds", "assists", "turnovers", "steals", "fouls", "minutes"],
         },
     )
+
+
+def _shot_result(outcome: str | None) -> str:
+    """made / missed / unknown, from the raw pipeline outcome.
+
+    A chart draws made green and missed red; a shot the pipeline could not
+    resolve is neither, so it stays distinct rather than being drawn as a miss.
+    """
+
+    if outcome == MADE:
+        return "made"
+    if outcome == MISSED:
+        return "missed"
+    return "unknown"
+
+
+def build_shot_chart(
+    *,
+    shots_document: dict | None,
+    teams_document: dict | None,
+    numbers_document: dict | None,
+    track_id: int | None = None,
+    roster: dict[str, dict] | None = None,
+    our_team_side: int | None = None,
+) -> dict:
+    """Every located shot as a court marker, grouped by the player who took it.
+
+    Built on top of the box score so a marker is scored by exactly the same
+    rules as the totals it must agree with. Each marker carries `made` and
+    `result` for colouring (made green, missed red) and its court position in
+    metres; `court` ships the geometry needed to draw the floor and arc under
+    them. `track_id` narrows the chart to one player without changing any total.
+    """
+
+    game = build_game_stats(
+        shots_document=shots_document,
+        teams_document=teams_document,
+        numbers_document=numbers_document,
+        roster=roster,
+        our_team_side=our_team_side,
+    ).to_dict()
+
+    display_of = {player["track_id"]: player["display_name"] for player in game["players"]}
+    markers: list[dict] = []
+    per_player: dict[int, dict] = {}
+
+    for row in game["shots"]:
+        if track_id is not None and row["track_id"] != track_id:
+            continue
+        marker = {
+            "shot_id": row["shot_id"],
+            "track_id": row["track_id"],
+            "team_id": row["team_id"],
+            "jersey_number": row["jersey_number"],
+            "roster_player_id": row.get("roster_player_id"),
+            "roster_name": row.get("roster_name"),
+            "x_m": row["court_x_m"],
+            "y_m": row["court_y_m"],
+            "made": row["made"],
+            "result": _shot_result(row.get("outcome")),
+            "points": row["points"],
+            "zone": row["zone"],
+            "distance_m": row["distance_m"],
+            "shot_type": row["shot_type"],
+            "timestamp_seconds": row["timestamp_seconds"],
+            "attribution": row["attribution"],
+        }
+        markers.append(marker)
+        if row["track_id"] is not None:
+            bucket = per_player.setdefault(
+                row["track_id"],
+                {
+                    "track_id": row["track_id"],
+                    "team_id": row["team_id"],
+                    "jersey_number": row["jersey_number"],
+                    "display_name": display_of.get(row["track_id"], f"Player {row['track_id']}"),
+                    "shots": [],
+                },
+            )
+            bucket["shots"].append(marker)
+
+    return {
+        "court": court_reference(),
+        "shots": markers,
+        "players": [per_player[key] for key in sorted(per_player)],
+        "coverage": {
+            **game["coverage"],
+            "shots_charted": len(markers),
+            "filtered_to_track_id": track_id,
+        },
+    }

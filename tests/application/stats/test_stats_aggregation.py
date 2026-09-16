@@ -10,7 +10,12 @@ from __future__ import annotations
 
 import unittest
 
-from src.application.stats.aggregation import build_game_stats, number_by_track, team_by_track
+from src.application.stats.aggregation import (
+    build_game_stats,
+    build_shot_chart,
+    number_by_track,
+    team_by_track,
+)
 
 # 6.21m from the near hoop — inside the arc, matching the real measured shot.
 TWO_POINT_XY = [3.867, 13.267]
@@ -249,3 +254,116 @@ class TestZoneEfficiency(unittest.TestCase):
         )
         team = next(t for t in stats["teams"] if t["team_id"] == 1)
         self.assertEqual(team["by_zone"]["mid_range"], {"made": 1, "attempted": 2, "pct": 0.5})
+
+
+class TestRosterLinking(unittest.TestCase):
+    """Tying a track to a real player, own team only, by jersey number."""
+
+    ROSTER = {"22": {"player_id": "p-white", "name": "Derrick White"}}
+
+    def build(self, *, our_team_side):
+        return build_game_stats(
+            shots_document=shots(shot()),
+            teams_document=TEAMS,
+            numbers_document=NUMBERS,
+            roster=self.ROSTER,
+            our_team_side=our_team_side,
+        ).to_dict()
+
+    def test_own_team_track_is_linked_to_the_roster_player(self) -> None:
+        stats = self.build(our_team_side=1)
+        linked = next(p for p in stats["players"] if p["track_id"] == 9)
+        self.assertEqual(linked["roster_player_id"], "p-white")
+        self.assertEqual(linked["display_name"], "Derrick White")
+
+    def test_opponent_wearing_the_same_number_is_not_linked(self) -> None:
+        """Track 5 also reads #22 but plays the other side — it stays anonymous."""
+
+        stats = self.build(our_team_side=1)
+        opponent = next(p for p in stats["players"] if p["track_id"] == 5)
+        self.assertIsNone(opponent["roster_player_id"])
+        self.assertEqual(opponent["display_name"], "#22")
+
+    def test_without_a_chosen_side_nothing_is_linked(self) -> None:
+        stats = build_game_stats(
+            shots_document=shots(shot()), teams_document=TEAMS, numbers_document=NUMBERS
+        ).to_dict()
+        self.assertTrue(all(p["roster_player_id"] is None for p in stats["players"]))
+        self.assertEqual(stats["coverage"]["players_linked_to_roster"], 0)
+
+    def test_linked_count_is_reported(self) -> None:
+        stats = self.build(our_team_side=1)
+        self.assertEqual(stats["coverage"]["players_linked_to_roster"], 1)
+
+    def test_shot_marker_carries_the_linked_identity(self) -> None:
+        chart = build_shot_chart(
+            shots_document=shots(shot()),
+            teams_document=TEAMS,
+            numbers_document=NUMBERS,
+            roster=self.ROSTER,
+            our_team_side=1,
+        )
+        self.assertEqual(chart["shots"][0]["roster_name"], "Derrick White")
+        self.assertEqual(chart["shots"][0]["roster_player_id"], "p-white")
+
+
+class TestShotChart(unittest.TestCase):
+    """The same shots as the box score, reshaped for drawing on a court."""
+
+    def build(self, *entries, track_id=None):
+        return build_shot_chart(
+            shots_document=shots(*entries),
+            teams_document=TEAMS,
+            numbers_document=NUMBERS,
+            track_id=track_id,
+        )
+
+    def test_marker_carries_position_and_whether_it_went_in(self) -> None:
+        marker = self.build(shot())["shots"][0]
+        self.assertEqual(marker["x_m"], 3.87)
+        self.assertEqual(marker["y_m"], 13.27)
+        self.assertTrue(marker["made"])
+        self.assertEqual(marker["result"], "made")
+        self.assertEqual(marker["points"], 2)
+
+    def test_a_miss_is_distinct_from_an_undetermined_result(self) -> None:
+        """Missed draws red; unknown draws neither, so they must not collapse."""
+
+        missed = self.build(shot(outcome="missed"))["shots"][0]
+        unknown = self.build(shot(outcome="unknown"))["shots"][0]
+        self.assertEqual(missed["result"], "missed")
+        self.assertFalse(missed["made"])
+        self.assertEqual(unknown["result"], "unknown")
+        self.assertFalse(unknown["made"])
+
+    def test_shots_are_grouped_under_the_player_who_took_them(self) -> None:
+        chart = self.build(
+            shot(event_id=1, shooter_track_id=9),
+            shot(event_id=2, shooter_track_id=9, outcome="missed"),
+        )
+        player = next(p for p in chart["players"] if p["track_id"] == 9)
+        self.assertEqual(len(player["shots"]), 2)
+        self.assertEqual(player["display_name"], "#22")
+
+    def test_track_id_filter_narrows_to_one_player(self) -> None:
+        chart = self.build(
+            shot(event_id=1, shooter_track_id=9),
+            shot(event_id=2, shooter_track_id=3, shot_origin_court_xy_m=[7.0, 7.5]),
+            track_id=9,
+        )
+        self.assertEqual({m["track_id"] for m in chart["shots"]}, {9})
+        self.assertEqual([p["track_id"] for p in chart["players"]], [9])
+        self.assertEqual(chart["coverage"]["filtered_to_track_id"], 9)
+
+    def test_court_geometry_is_shipped_for_drawing(self) -> None:
+        court = self.build(shot())["court"]
+        self.assertEqual(court["length_m"], 28.0)
+        self.assertEqual(court["width_m"], 15.0)
+        self.assertIn("home", court["hoops"])
+        self.assertEqual(court["three_point_radius_m"], 6.75)
+
+    def test_empty_when_there_are_no_shots(self) -> None:
+        chart = self.build()
+        self.assertEqual(chart["shots"], [])
+        self.assertEqual(chart["players"], [])
+        self.assertEqual(chart["coverage"]["shots_charted"], 0)

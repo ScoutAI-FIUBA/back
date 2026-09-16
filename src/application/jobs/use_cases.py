@@ -212,6 +212,27 @@ class GetProcessingJobUseCase:
         return job
 
 
+class SetJobTeamSideUseCase:
+    """Record which pipeline side (0 or 1) is the scout's own team.
+
+    Chosen once per job after processing; it is what lets a track be tied back to
+    a roster player by jersey number.
+    """
+
+    def __init__(self, *, jobs: JobRepositoryPort, team_access: TeamAccessPort) -> None:
+        self._jobs = jobs
+        self._team_access = team_access
+
+    def execute(self, *, user_id: str, team_id: str, job_id: str, our_team_side: int) -> ProcessingJob:
+        self._team_access.assert_access(user_id=user_id, team_id=team_id)
+        job = self._jobs.set_our_team_side(
+            job_id=job_id, team_id=team_id, our_team_side=our_team_side
+        )
+        if job is None:
+            raise JobError(code=JOB_NOT_FOUND, message="Job not found.")
+        return job
+
+
 # How long a results download link stays valid. Long enough to load the analysis
 # files, short enough that a leaked URL stops working the same day.
 RESULTS_URL_TTL_SECONDS = 3600

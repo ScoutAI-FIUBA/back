@@ -16,6 +16,7 @@ from src.application.jobs.use_cases import (
     ListVideoJobsUseCase,
     RecordJobProgressCommand,
     RecordJobProgressUseCase,
+    SetJobTeamSideUseCase,
     SubmitProcessingJobCommand,
     SubmitProcessingJobUseCase,
 )
@@ -31,6 +32,11 @@ class SubmitJobPayload(BaseModel):
     team_id: UUID
     # Which pipeline to run. None lets the processing service pick its default.
     pipeline: str | None = None
+
+
+class OurTeamPayload(BaseModel):
+    # Which pipeline side (0 or 1) is the scout's own team.
+    team_side: Literal[0, 1]
 
 
 class JobStatusCallbackPayload(BaseModel):
@@ -54,6 +60,7 @@ def _job_to_dict(job) -> dict[str, object]:
         "error_message": job.error_message,
         "progress_percent": job.progress_percent,
         "summary": job.summary,
+        "our_team_side": job.our_team_side,
         "started_at": job.started_at.isoformat() if job.started_at else None,
         "finished_at": job.finished_at.isoformat() if job.finished_at else None,
         "created_at": job.created_at.isoformat(),
@@ -68,6 +75,7 @@ def create_jobs_router(
     list_video_jobs_use_case: ListVideoJobsUseCase,
     record_job_progress_use_case: RecordJobProgressUseCase,
     get_job_results_use_case: GetJobResultsUseCase,
+    set_team_side_use_case: SetJobTeamSideUseCase,
     callback_token: str,
 ) -> APIRouter:
     router = APIRouter(tags=["jobs"])
@@ -167,6 +175,25 @@ def create_jobs_router(
                 user_id=str(request.state.user_id),
                 team_id=str(team_id),
                 job_id=str(job_id),
+            )
+            return {"job": _job_to_dict(job)}
+        except JobError as exc:
+            return JSONResponse(status_code=job_error_http_status(exc.code), content=exc.to_envelope())
+
+    @router.put("/jobs/{job_id}/our-team", response_model=None)
+    def set_our_team(job_id: UUID, team_id: UUID, payload: OurTeamPayload, request: Request):
+        """Mark which pipeline side (0 or 1) is the scout's own team.
+
+        This is what lets a tracked player be tied to a roster player by jersey
+        number; only this side is linked, since we keep no opponent rosters.
+        """
+
+        try:
+            job = set_team_side_use_case.execute(
+                user_id=str(request.state.user_id),
+                team_id=str(team_id),
+                job_id=str(job_id),
+                our_team_side=payload.team_side,
             )
             return {"job": _job_to_dict(job)}
         except JobError as exc:

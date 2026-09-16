@@ -79,6 +79,7 @@ def build_client(
     listing=None,
     record=None,
     results=None,
+    set_team_side=None,
     callback_token=CALLBACK_TOKEN,
 ) -> TestClient:
     app = FastAPI()
@@ -95,6 +96,7 @@ def build_client(
             list_video_jobs_use_case=listing or _Ok([build_job()]),
             record_job_progress_use_case=record or _Records(),
             get_job_results_use_case=results or _Ok({"job_id": JOB_ID, "artifact_urls": {}}),
+            set_team_side_use_case=set_team_side or _Ok(build_job()),
             callback_token=callback_token,
         )
     )

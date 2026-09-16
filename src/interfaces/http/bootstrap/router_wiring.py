@@ -90,6 +90,7 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             list_video_jobs_use_case=deps.list_video_jobs_use_case,
             record_job_progress_use_case=deps.record_job_progress_use_case,
             get_job_results_use_case=deps.get_job_results_use_case,
+            set_team_side_use_case=deps.set_job_team_side_use_case,
             callback_token=deps.processing_callback_token,
         )
     )
@@ -97,5 +98,8 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
         create_stats_router(
             game_stats_use_case=deps.game_stats_use_case,
             court_positions_use_case=deps.court_positions_use_case,
+            shot_chart_use_case=deps.shot_chart_use_case,
+            team_sides_use_case=deps.team_sides_use_case,
+            similar_clips_use_case=deps.similar_clips_use_case,
         )
     )

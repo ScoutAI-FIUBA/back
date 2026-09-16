@@ -64,9 +64,16 @@ from src.application.jobs.use_cases import (
     GetProcessingJobUseCase,
     ListVideoJobsUseCase,
     RecordJobProgressUseCase,
+    SetJobTeamSideUseCase,
     SubmitProcessingJobUseCase,
 )
-from src.application.stats.use_cases import GetCourtPositionsUseCase, GetGameStatsUseCase
+from src.application.stats.use_cases import (
+    GetCourtPositionsUseCase,
+    GetGameStatsUseCase,
+    GetShotChartUseCase,
+    GetSimilarClipsUseCase,
+    GetTeamSidesUseCase,
+)
 from src.application.video.errors import TEAM_NOT_FOUND, VideoError
 from src.application.video.ports import TeamAccessPort
 from src.application.video.use_cases import (
@@ -247,8 +254,12 @@ class HttpDependencies:
     list_video_jobs_use_case: ListVideoJobsUseCase
     record_job_progress_use_case: RecordJobProgressUseCase
     get_job_results_use_case: GetJobResultsUseCase
+    set_job_team_side_use_case: SetJobTeamSideUseCase
     game_stats_use_case: GetGameStatsUseCase
     court_positions_use_case: GetCourtPositionsUseCase
+    shot_chart_use_case: GetShotChartUseCase
+    team_sides_use_case: GetTeamSidesUseCase
+    similar_clips_use_case: GetSimilarClipsUseCase
     processing_callback_token: str
     export_clip_item_use_case: ExportClipItemUseCase
     access_token_resolver: JWTAccessTokenResolver
@@ -477,9 +488,13 @@ def build_http_dependencies(
             urls=artifact_urls,
             team_access=team_access,
         ),
+        set_job_team_side_use_case=SetJobTeamSideUseCase(
+            jobs=jobs_repo,
+            team_access=team_access,
+        ),
         processing_callback_token=(os.getenv("PROCESSING_CALLBACK_TOKEN") or "").strip(),
         game_stats_use_case=GetGameStatsUseCase(
-            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
+            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access, roster=players_repo
         ),
         court_positions_use_case=GetCourtPositionsUseCase(
             jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
@@ -488,6 +503,15 @@ def build_http_dependencies(
             collections=clip_collections_repo,
             videos=videos_repo,
             exporter=clip_exporter,
+        ),
+        shot_chart_use_case=GetShotChartUseCase(
+            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access, roster=players_repo
+        ),
+        team_sides_use_case=GetTeamSidesUseCase(
+            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access, roster=players_repo
+        ),
+        similar_clips_use_case=GetSimilarClipsUseCase(
+            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
         ),
         access_token_resolver=access_token_resolver,
     )
