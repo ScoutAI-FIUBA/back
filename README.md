@@ -85,12 +85,14 @@ Note: CORS preflight `OPTIONS` requests are also allowed without auth.
 | `POST` | `/videos/{video_id}/collections` | Yes | Create a private clip collection under one owned video. |
 | `GET` | `/videos/{video_id}/collections` | Yes | List private collections for one owned video. |
 | `GET` | `/videos/{video_id}/collections/{collection_id}` | Yes | Get collection metadata plus ordered clips. |
-| `POST` | `/videos/{video_id}/collections/{collection_id}/clips` | Yes | Add one clip metadata record. |
-| `POST` | `/videos/{video_id}/collections/{collection_id}/clips/batch` | Yes | Add multiple clip metadata records in one request. |
-| `DELETE` | `/videos/{video_id}/collections/{collection_id}/clips/{item_id}` | Yes | Delete one clip metadata record. |
+| `POST` | `/videos/{video_id}/collections/{collection_id}/clips` | Yes | Add one virtual clip range (`start_ms`, `end_ms`). |
+| `POST` | `/videos/{video_id}/collections/{collection_id}/clips/batch` | Yes | Add multiple virtual clip ranges in one request. |
+| `POST` | `/videos/{video_id}/collections/{collection_id}/clips/{item_id}/export` | Yes | Re-encode and return a cached MP4 download URL for one clip item. |
+| `DELETE` | `/videos/{video_id}/collections/{collection_id}/clips/{item_id}` | Yes | Delete one virtual clip item row. |
 
 - Clip collections contract and examples: `specs/api/clip-collections.md`.
 - Clip persistence uses dedicated tables from `src/infrastructure/clip_collections/migrations/001_clip_collections_foundation.sql`.
+- Clip exports require `ffmpeg` in the runtime image and an object-storage lifecycle rule that deletes `exports/` objects after 7 days.
 
 ### Players
 

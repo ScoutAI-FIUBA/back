@@ -46,9 +46,8 @@
   "items": [
     {
       "id": "...",
-      "filename": "goal.mp4",
-      "storage_key": "user/<user>/team/<team>/video/<video>/collection/<collection>/clips/<clip>-goal.mp4",
-      "cloudflare_url": "https://cdn.example.com/goal.mp4",
+      "start_ms": 5000,
+      "end_ms": 15000,
       "position": 1
     }
   ]
@@ -61,32 +60,57 @@
   - `404 CLIP_COLLECTION_NOT_FOUND`
 
 ### POST /videos/{video_id}/collections/{collection_id}/clips
-- Adds one clip metadata record.
+- Adds one virtual clip time range.
 - Body:
 
 ```json
 {
-  "filename": "goal.mp4",
-  "cloudflare_url": "https://cdn.example.com/goal.mp4"
+  "start_ms": 5000,
+  "end_ms": 15000
 }
 ```
 
 - `201 Created`: `{ "item": { ... } }`
+- Errors:
+  - `400 INVALID_CLIP_RANGE` when `start_ms < 0`, `end_ms <= start_ms`, `end_ms - start_ms > 30000`, or `end_ms > video.duration_ms`
 
 ### POST /videos/{video_id}/collections/{collection_id}/clips/batch
-- Adds multiple clip metadata records in order.
+- Adds multiple virtual clip time ranges in order.
 - Body:
 
 ```json
 {
   "clips": [
-    { "filename": "goal.mp4", "cloudflare_url": "https://cdn.example.com/goal.mp4" },
-    { "filename": "assist.mov", "cloudflare_url": "https://cdn.example.com/assist.mov" }
+    { "start_ms": 5000, "end_ms": 15000 },
+    { "start_ms": 18000, "end_ms": 24000 }
   ]
 }
 ```
 
 - `201 Created`: `{ "items": [ ... ] }`
+- Errors:
+  - `400 INVALID_CLIP_RANGE` with atomic rejection for the whole batch
+
+### POST /videos/{video_id}/collections/{collection_id}/clips/{item_id}/export
+- Synchronously re-encodes the exact clip range and returns a download URL.
+- `200 OK`:
+
+```json
+{
+  "download_url": "https://download.example.com/exports/<item_id>.mp4"
+}
+```
+
+- Export behavior:
+  - Cache key is deterministic: `exports/{item_id}.mp4`
+  - Cached exports are reused until the storage lifecycle removes them
+  - Exports are frame-accurate re-encodes (`ffmpeg`, not stream copy)
+- Errors:
+  - `403 FORBIDDEN_TEAM_ACCESS`
+  - `404 VIDEO_NOT_FOUND`
+  - `404 CLIP_COLLECTION_NOT_FOUND`
+  - `404 CLIP_COLLECTION_ITEM_NOT_FOUND`
+  - `502 CLIP_EXPORT_FAILED`
 
 ### DELETE /videos/{video_id}/collections/{collection_id}/clips/{item_id}
 - Deletes one collection item.
@@ -106,5 +130,6 @@
 
 ## Operational notes
 
-- `storage_key` is generated server-side using `user/{user_id}/team/{team_id}/video/{video_id}/collection/{collection_id}/clips/{clip_id}-{filename}`.
-- `cloudflare_url` is client-provided metadata persisted alongside the canonical `storage_key`.
+- Clip items persist only `start_ms`, `end_ms`, `position`, and timestamps; no per-clip file metadata is stored.
+- When `video.duration_ms` is `NULL`, the API skips only the `end_ms <= duration_ms` validation.
+- Runtime must include `ffmpeg` and storage must enforce a 7-day lifecycle rule for the `exports/` prefix.

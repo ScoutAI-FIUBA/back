@@ -42,9 +42,8 @@ def _row_to_item(row: dict[str, Any] | None) -> ClipCollectionItem | None:
     return ClipCollectionItem(
         id=str(row["id"]),
         collection_id=str(row["collection_id"]),
-        filename=row["filename"],
-        storage_key=row["storage_key"],
-        cloudflare_url=row["cloudflare_url"],
+        start_ms=row["start_ms"],
+        end_ms=row["end_ms"],
         position=row["position"],
         created_at=row["created_at"],
     )
@@ -157,18 +156,17 @@ class PostgresClipCollectionRepository:
                 cur.execute(
                     """
                     INSERT INTO clip_collection_items (
-                        id, collection_id, filename, storage_key, cloudflare_url, position, created_at
+                        id, collection_id, start_ms, end_ms, position, created_at
                     ) VALUES (
-                        %(id)s::uuid, %(collection_id)s::uuid, %(filename)s, %(storage_key)s, %(cloudflare_url)s, %(position)s, %(created_at)s
+                        %(id)s::uuid, %(collection_id)s::uuid, %(start_ms)s, %(end_ms)s, %(position)s, %(created_at)s
                     )
                     RETURNING *
                     """,
                     {
                         "id": item.item_id,
                         "collection_id": collection_id,
-                        "filename": item.filename,
-                        "storage_key": item.storage_key,
-                        "cloudflare_url": item.cloudflare_url,
+                        "start_ms": item.start_ms,
+                        "end_ms": item.end_ms,
                         "position": next_position,
                         "created_at": now,
                     },
@@ -194,6 +192,21 @@ class PostgresClipCollectionRepository:
                 {"collection_id": collection_id, "owner_user_id": owner_user_id},
             )
             return [item for row in cur.fetchall() if (item := _row_to_item(row)) is not None]
+
+    def get_item(self, *, item_id: str, collection_id: str, owner_user_id: str) -> ClipCollectionItem | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT i.*
+                FROM clip_collection_items i
+                INNER JOIN clip_collections c ON c.id = i.collection_id
+                WHERE i.id = %(item_id)s::uuid
+                  AND i.collection_id = %(collection_id)s::uuid
+                  AND c.owner_user_id = %(owner_user_id)s
+                """,
+                {"item_id": item_id, "collection_id": collection_id, "owner_user_id": owner_user_id},
+            )
+            return _row_to_item(cur.fetchone())
 
     def delete_item(self, *, item_id: str, collection_id: str, owner_user_id: str) -> bool:
         with self._connection.cursor() as cur:

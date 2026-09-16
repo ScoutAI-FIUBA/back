@@ -30,6 +30,7 @@ from src.application.clip_collections.use_cases import (
     AddClipUseCase,
     CreateClipCollectionUseCase,
     DeleteClipCollectionItemUseCase,
+    ExportClipItemUseCase,
     GetClipCollectionDetailUseCase,
     ListClipCollectionsUseCase,
 )
@@ -85,6 +86,7 @@ from src.infrastructure.auth.postgres_repositories import (
     PostgresRefreshSessionRepository,
     PostgresUserRepository,
 )
+from src.infrastructure.clip_collections.ffmpeg_clip_exporter import FFmpegClipExporter
 from src.infrastructure.clip_collections.postgres_repository import PostgresClipCollectionRepository
 from src.infrastructure.jobs.http_processing_service import (
     HttpProcessingService,
@@ -248,6 +250,7 @@ class HttpDependencies:
     game_stats_use_case: GetGameStatsUseCase
     court_positions_use_case: GetCourtPositionsUseCase
     processing_callback_token: str
+    export_clip_item_use_case: ExportClipItemUseCase
     access_token_resolver: JWTAccessTokenResolver
 
 
@@ -308,6 +311,8 @@ def build_http_dependencies(
         else UnavailableArtifactReader()
     )
     team_access = TeamOwnershipAccessAdapter(teams=teams_repo)
+    clip_exporter = FFmpegClipExporter(storage=video_storage)
+    team_access = TeamExistsAccessAdapter(teams=teams_repo)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
     refresh_tokens = OpaqueRefreshTokenService(secret=refresh_secret)
@@ -479,6 +484,10 @@ def build_http_dependencies(
         ),
         court_positions_use_case=GetCourtPositionsUseCase(
             jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
+        export_clip_item_use_case=ExportClipItemUseCase(
+            collections=clip_collections_repo,
+            videos=videos_repo,
+            exporter=clip_exporter,
         ),
         access_token_resolver=access_token_resolver,
     )

@@ -64,6 +64,12 @@
       "sessions": 32,
       "memories": 78,
       "prompts": 115
+      "id": "6b381dac",
+      "created_by": "lautaro",
+      "created_at": "2026-08-02T22:23:58Z",
+      "sessions": 9,
+      "memories": 34,
+      "prompts": 28
     }
   ]
 }

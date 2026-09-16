@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import psycopg
 import pytest
 
+from src.infrastructure.clip_collections.ffmpeg_clip_exporter import FFmpegClipExporter
 from src.infrastructure.storage import R2Storage
 
 
@@ -43,6 +44,38 @@ def _apply_migrations(database_url: str) -> None:
                 for migration_file in sorted(migration_dir.glob("*.sql")):
                     cur.execute(migration_file.read_text(encoding="utf-8"))
         conn.commit()
+
+
+def _seed_video_ownership_prerequisites(conn: psycopg.Connection) -> tuple[str, str, str]:
+    user_id = f"user-{uuid4().hex[:8]}"
+    team_id = str(uuid4())
+    video_id = str(uuid4())
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO users (id, email_normalized, password_hash, created_at, updated_at)
+            VALUES (%s, %s, %s, NOW(), NOW())
+            """,
+            (user_id, f"{user_id}@example.com", "hash"),
+        )
+        cur.execute(
+            """
+            INSERT INTO teams (id, name, short_name, city, country, created_at)
+            VALUES (%s, %s, %s, %s, %s, NOW())
+            """,
+            (team_id, f"Team {team_id[:8]}", f"T{team_id[:4]}", "Buenos Aires", "Argentina"),
+        )
+        cur.execute(
+            """
+            INSERT INTO videos (
+                id, team_id, owner_user_id, storage_key, title, status,
+                duration_ms, created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, 'READY', %s, NOW(), NOW())
+            """,
+            (video_id, team_id, user_id, f"videos/{video_id}.mp4", "Legacy source", 60_000),
+        )
+    return user_id, team_id, video_id
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -85,12 +118,22 @@ def client_factory(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(R2Storage, "complete_multipart_upload", lambda self, key, upload_id, parts: "etag-final")
     monkeypatch.setattr(R2Storage, "generate_presigned_url", lambda self, key, expires_in=900: f"https://play.local/{key}?exp={expires_in}")
+    monkeypatch.setattr(R2Storage, "generate_download_url", lambda self, key, expires_in=3600: f"https://download.local/{key}?exp={expires_in}")
     monkeypatch.setattr(R2Storage, "delete_video", lambda self, key: None)
     monkeypatch.setattr(R2Storage, "abort_multipart_upload", lambda self, key, upload_id: None)
+    exported: list[tuple[str, str, int, int]] = []
+    cached_exports: set[str] = set()
+    monkeypatch.setattr(FFmpegClipExporter, "export_exists", lambda self, export_key: export_key in cached_exports)
+    monkeypatch.setattr(
+        FFmpegClipExporter,
+        "export_clip",
+        lambda self, source_key, export_key, start_ms, end_ms: (exported.append((source_key, export_key, start_ms, end_ms)), cached_exports.add(export_key)),
+    )
+    monkeypatch.setattr(FFmpegClipExporter, "generate_download_url", lambda self, export_key, expires_in=3600: f"https://download.local/{export_key}?exp={expires_in}")
 
     stack = ExitStack()
 
-    def _build_client() -> TestClient:
+    def _build_client() -> tuple[TestClient, list[tuple[str, str, int, int]], set[str]]:
         app = create_app()
         test_client = stack.enter_context(TestClient(app))
         email = f"clips-{uuid4().hex}@example.com"
@@ -99,7 +142,7 @@ def client_factory(monkeypatch: pytest.MonkeyPatch):
         login = test_client.post("/auth/login", json={"email": email, "password": password})
         assert login.status_code == 200
         test_client.headers.update({"Authorization": f"Bearer {login.json()['access_token']}"})
-        return test_client
+        return test_client, exported, cached_exports
 
     try:
         yield _build_client
@@ -131,14 +174,14 @@ def _create_ready_video(client: TestClient) -> tuple[str, str]:
     video_id = init.json()["video_id"]
     complete = client.post(
         f"/videos/{video_id}/upload/complete",
-        json={"team_id": team_id, "size_bytes": 123, "upload_id": init.json()["upload_id"], "parts": [{"part_number": 1, "etag": "etag-1"}]},
+        json={"team_id": team_id, "size_bytes": 123, "duration_ms": 60000, "upload_id": init.json()["upload_id"], "parts": [{"part_number": 1, "etag": "etag-1"}]},
     )
     assert complete.status_code == 200
     return team_id, video_id
 
 
 def test_clip_collections_happy_path_single_batch_and_delete(client_factory) -> None:
-    client = client_factory()
+    client, exported, cached_exports = client_factory()
     _, video_id = _create_ready_video(client)
 
     created = client.post(f"/videos/{video_id}/collections", json={"name": "Highlights", "description": "First cut"})
@@ -152,19 +195,19 @@ def test_clip_collections_happy_path_single_batch_and_delete(client_factory) -> 
 
     single = client.post(
         f"/videos/{video_id}/collections/{collection_id}/clips",
-        json={"filename": "goal 1.mp4", "cloudflare_url": "https://cdn.local/goal-1.mp4"},
+        json={"start_ms": 1000, "end_ms": 5000},
     )
     assert single.status_code == 201
     first_item = single.json()["item"]
-    assert first_item["storage_key"].startswith("user/")
-    assert f"/video/{video_id}/collection/{collection_id}/clips/" in first_item["storage_key"]
+    assert first_item["start_ms"] == 1000
+    assert first_item["end_ms"] == 5000
 
     batch = client.post(
         f"/videos/{video_id}/collections/{collection_id}/clips/batch",
         json={
             "clips": [
-                {"filename": "goal 2.mp4", "cloudflare_url": "https://cdn.local/goal-2.mp4"},
-                {"filename": "assist.mov", "cloudflare_url": "https://cdn.local/assist.mov"},
+                {"start_ms": 5000, "end_ms": 9000},
+                {"start_ms": 9000, "end_ms": 12000},
             ]
         },
     )
@@ -174,6 +217,21 @@ def test_clip_collections_happy_path_single_batch_and_delete(client_factory) -> 
     detail = client.get(f"/videos/{video_id}/collections/{collection_id}")
     assert detail.status_code == 200
     assert [item["position"] for item in detail.json()["items"]] == [1, 2, 3]
+    assert detail.json()["items"][0]["start_ms"] == 1000
+
+    export_response = client.post(f"/videos/{video_id}/collections/{collection_id}/clips/{first_item['id']}/export")
+    assert export_response.status_code == 200
+    assert export_response.json()["download_url"] == f"https://download.local/exports/{first_item['id']}.mp4?exp=3600"
+    assert len(exported) == 1
+    source_key, export_key, start_ms, end_ms = exported[0]
+    assert source_key.startswith("videos/")
+    assert export_key == f"exports/{first_item['id']}.mp4"
+    assert (start_ms, end_ms) == (1000, 5000)
+    assert export_key in cached_exports
+
+    export_again = client.post(f"/videos/{video_id}/collections/{collection_id}/clips/{first_item['id']}/export")
+    assert export_again.status_code == 200
+    assert len(exported) == 1
 
     deleted = client.delete(f"/videos/{video_id}/collections/{collection_id}/clips/{first_item['id']}")
     assert deleted.status_code == 204
@@ -183,21 +241,109 @@ def test_clip_collections_happy_path_single_batch_and_delete(client_factory) -> 
     assert len(detail_after_delete.json()["items"]) == 2
 
 
+def test_clip_collection_migration_converges_legacy_schema_once_and_stays_stable() -> None:
+    env = _required_env()
+    try:
+        with psycopg.connect(env["DATABASE_URL"]) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DROP TABLE IF EXISTS clip_collection_items")
+                cur.execute("DROP TABLE IF EXISTS clip_collections")
+                cur.execute(
+                    """
+                    CREATE TABLE clip_collections (
+                        id UUID PRIMARY KEY,
+                        video_id UUID NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+                        team_id UUID NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        name VARCHAR(180) NOT NULL,
+                        description TEXT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE clip_collection_items (
+                        id UUID PRIMARY KEY,
+                        collection_id UUID NOT NULL REFERENCES clip_collections(id) ON DELETE CASCADE,
+                        filename VARCHAR(255) NOT NULL,
+                        storage_key TEXT NOT NULL,
+                        cloudflare_url TEXT NOT NULL,
+                        position INTEGER NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL,
+                        UNIQUE (collection_id, position)
+                    )
+                    """
+                )
+            conn.commit()
+
+            _apply_migrations(env["DATABASE_URL"])
+
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = CURRENT_SCHEMA()
+                      AND table_name = 'clip_collection_items'
+                    ORDER BY ordinal_position
+                    """
+                )
+                columns = [row[0] for row in cur.fetchall()]
+                assert "start_ms" in columns
+                assert "end_ms" in columns
+                assert "filename" not in columns
+                assert "storage_key" not in columns
+                assert "cloudflare_url" not in columns
+
+                user_id, team_id, video_id = _seed_video_ownership_prerequisites(conn)
+                collection_id = str(uuid4())
+                item_id = str(uuid4())
+                cur.execute(
+                    """
+                    INSERT INTO clip_collections (
+                        id, video_id, team_id, owner_user_id, name, description, created_at, updated_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    """,
+                    (collection_id, video_id, team_id, user_id, "After convergence", None),
+                )
+                cur.execute(
+                    """
+                    INSERT INTO clip_collection_items (
+                        id, collection_id, start_ms, end_ms, position, created_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    """,
+                    (item_id, collection_id, 1_000, 5_000, 1),
+                )
+            conn.commit()
+
+            _apply_migrations(env["DATABASE_URL"])
+
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM clip_collection_items")
+                assert cur.fetchone()[0] == 1
+    except psycopg.OperationalError as exc:
+        pytest.skip(f"Postgres not reachable for integration tests: {exc}")
+
+
 def test_clip_collections_are_private_to_video_owner(client_factory) -> None:
-    owner_client = client_factory()
+    owner_client, _, _ = client_factory()
     _, video_id = _create_ready_video(owner_client)
     created = owner_client.post(f"/videos/{video_id}/collections", json={"name": "Private"})
     assert created.status_code == 201
     collection_id = created.json()["collection"]["id"]
 
-    other_client = client_factory()
+    other_client, _, _ = client_factory()
 
     for response in (
         other_client.get(f"/videos/{video_id}/collections"),
         other_client.get(f"/videos/{video_id}/collections/{collection_id}"),
         other_client.post(
             f"/videos/{video_id}/collections/{collection_id}/clips",
-            json={"filename": "steal.mp4", "cloudflare_url": "https://cdn.local/steal.mp4"},
+            json={"start_ms": 1000, "end_ms": 3000},
         ),
     ):
         assert response.status_code == 403

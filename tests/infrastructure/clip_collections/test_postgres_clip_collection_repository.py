@@ -50,9 +50,8 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
             items=[
                 PendingClipItem(
                     item_id="item-1",
-                    filename="goal-1.mp4",
-                    storage_key="clips/goal-1.mp4",
-                    cloudflare_url="https://cdn.local/goal-1.mp4",
+                    start_ms=1_000,
+                    end_ms=2_000,
                 )
             ],
         )
@@ -70,18 +69,16 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
                 {
                     "id": "item-1",
                     "collection_id": "collection-1",
-                    "filename": "goal-1.mp4",
-                    "storage_key": "clips/goal-1.mp4",
-                    "cloudflare_url": "https://cdn.local/goal-1.mp4",
+                    "start_ms": 1_000,
+                    "end_ms": 2_000,
                     "position": 3,
                     "created_at": now,
                 },
                 {
                     "id": "item-2",
                     "collection_id": "collection-1",
-                    "filename": "goal-2.mp4",
-                    "storage_key": "clips/goal-2.mp4",
-                    "cloudflare_url": "https://cdn.local/goal-2.mp4",
+                    "start_ms": 2_000,
+                    "end_ms": 3_000,
                     "position": 4,
                     "created_at": now,
                 },
@@ -95,24 +92,45 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
             items=[
                 PendingClipItem(
                     item_id="item-1",
-                    filename="goal-1.mp4",
-                    storage_key="clips/goal-1.mp4",
-                    cloudflare_url="https://cdn.local/goal-1.mp4",
+                    start_ms=1_000,
+                    end_ms=2_000,
                 ),
                 PendingClipItem(
                     item_id="item-2",
-                    filename="goal-2.mp4",
-                    storage_key="clips/goal-2.mp4",
-                    cloudflare_url="https://cdn.local/goal-2.mp4",
+                    start_ms=2_000,
+                    end_ms=3_000,
                 ),
             ],
         )
 
         self.assertEqual([item.position for item in created], [3, 4])
+        self.assertEqual([(item.start_ms, item.end_ms) for item in created], [(1_000, 2_000), (2_000, 3_000)])
         self.assertIn("FOR UPDATE", connection.executed[0][0])
         self.assertIn("AS max_position", connection.executed[1][0])
         self.assertEqual(connection.executed[2][1]["position"], 3)
         self.assertEqual(connection.executed[3][1]["position"], 4)
+
+    def test_get_item_returns_timestamp_item_for_export_lookup(self) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        connection = _Connection(
+            [
+                {
+                    "id": "item-1",
+                    "collection_id": "collection-1",
+                    "start_ms": 4_000,
+                    "end_ms": 8_000,
+                    "position": 1,
+                    "created_at": now,
+                }
+            ]
+        )
+        repository = PostgresClipCollectionRepository(connection=connection)
+
+        item = repository.get_item(item_id="item-1", collection_id="collection-1", owner_user_id="user-1")
+
+        assert item is not None
+        self.assertEqual((item.start_ms, item.end_ms), (4_000, 8_000))
+        self.assertIn("FROM clip_collection_items", connection.executed[0][0])
 
 
 if __name__ == "__main__":

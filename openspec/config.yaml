@@ -1,0 +1,28 @@
+# openspec/config.yaml
+schema: spec-driven
+
+context: |
+  Tech stack: Python 3.12+, FastAPI, PostgreSQL (psycopg), Cloudflare R2 storage, ffmpeg
+  Architecture: Clean/hexagonal — domain / application (ports+use cases) / infrastructure / interfaces (HTTP)
+  Testing: pytest, unit per use case + repository integration tests
+  Style: typed dataclasses, error envelope {error:{code,message,details}}, owner-scoped auth
+
+rules:
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+    - Spec artifact under 650 words; scenarios 3-5 lines
+  design:
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+  apply:
+    - Follow existing code patterns
+    tdd: false
+    test_command: "pytest"
+  verify:
+    test_command: "pytest"
+    build_command: ""
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

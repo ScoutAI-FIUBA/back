@@ -20,8 +20,7 @@ class ClipCollection:
 class ClipCollectionItem:
     id: str
     collection_id: str
-    filename: str
-    storage_key: str
-    cloudflare_url: str
+    start_ms: int
+    end_ms: int
     position: int
     created_at: datetime
