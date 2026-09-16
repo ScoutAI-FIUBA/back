@@ -167,7 +167,9 @@ def test_match_stats_foundation_flow(client: TestClient) -> None:
 
     fetched_stats = client.get(f"/matches/{match_id}/stats")
     assert fetched_stats.status_code == 200
-    assert fetched_stats.json()["participants"][0]["player_id"] == player["id"]
+    participants_by_name = {p["display_name"]: p for p in fetched_stats.json()["participants"]}
+    assert participants_by_name["Player One"]["player_id"] == player["id"]
+    assert participants_by_name["External Player"]["player_id"] is None
 
     player_stats_after_match = client.get(f"/players/{player['id']}/stats")
     assert player_stats_after_match.status_code == 200
