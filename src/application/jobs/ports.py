@@ -60,6 +60,17 @@ class JobRepositoryPort(ABC):
     def get_by_id(self, *, job_id: str, team_id: str) -> ProcessingJob | None: ...
 
     @abstractmethod
+    def set_our_team_side(
+        self, *, job_id: str, team_id: str, our_team_side: int
+    ) -> ProcessingJob | None: ...
+
+    @abstractmethod
+    def set_features(self, *, job_id: str, team_id: str, features: dict) -> ProcessingJob | None: ...
+
+    @abstractmethod
+    def list_done_by_team(self, *, team_id: str) -> list[ProcessingJob]: ...
+
+    @abstractmethod
     def list_by_video(self, *, video_id: str, team_id: str) -> list[ProcessingJob]: ...
 
     @abstractmethod

@@ -38,6 +38,8 @@ def _row_to_job(row: dict[str, Any] | None) -> ProcessingJob | None:
         progress_percent=row.get("progress_percent"),
         artifacts=row.get("artifacts"),
         summary=row.get("summary"),
+        our_team_side=row.get("our_team_side"),
+        features=row.get("features"),
         started_at=row.get("started_at"),
         finished_at=row.get("finished_at"),
         created_at=row["created_at"],
@@ -209,6 +211,44 @@ class PostgresJobRepository:
                 {"job_id": job_id, "team_id": team_id},
             )
             return _row_to_job(cur.fetchone())
+
+    def set_our_team_side(self, *, job_id: str, team_id: str, our_team_side: int) -> ProcessingJob | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE processing_jobs
+                   SET our_team_side = %(side)s, updated_at = NOW()
+                 WHERE id = %(job_id)s::uuid AND team_id = %(team_id)s::uuid
+                RETURNING *
+                """,
+                {"job_id": job_id, "team_id": team_id, "side": our_team_side},
+            )
+            return _row_to_job(cur.fetchone())
+
+    def set_features(self, *, job_id: str, team_id: str, features: dict) -> ProcessingJob | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE processing_jobs
+                   SET features = %(features)s::jsonb, updated_at = NOW()
+                 WHERE id = %(job_id)s::uuid AND team_id = %(team_id)s::uuid
+                RETURNING *
+                """,
+                {"job_id": job_id, "team_id": team_id, "features": json.dumps(features)},
+            )
+            return _row_to_job(cur.fetchone())
+
+    def list_done_by_team(self, *, team_id: str) -> list[ProcessingJob]:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT * FROM processing_jobs
+                 WHERE team_id = %(team_id)s::uuid AND status = 'DONE'
+                 ORDER BY created_at DESC
+                """,
+                {"team_id": team_id},
+            )
+            return [job for job in (_row_to_job(row) for row in cur.fetchall()) if job is not None]
 
     def list_by_video(self, *, video_id: str, team_id: str) -> list[ProcessingJob]:
         with self._connection.cursor(row_factory=dict_row) as cur:

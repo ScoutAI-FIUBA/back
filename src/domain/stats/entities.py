@@ -98,10 +98,16 @@ class PlayerStats:
     team_id: int | None = None
     jersey_number: str | None = None
     roster_player_id: str | None = None
+    # The real player's name, filled in only once a track is linked to the
+    # scout's roster (own team, matched by jersey number). Opponents stay
+    # unlinked, so this is None for them and the label falls back to the number.
+    roster_name: str | None = None
     shooting: ShotTally = field(default_factory=ShotTally)
 
     @property
     def display_name(self) -> str:
+        if self.roster_name:
+            return self.roster_name
         if self.jersey_number:
             return f"#{self.jersey_number}"
         return f"Player {self.track_id}"
@@ -112,6 +118,7 @@ class PlayerStats:
             "team_id": self.team_id,
             "jersey_number": self.jersey_number,
             "roster_player_id": self.roster_player_id,
+            "roster_name": self.roster_name,
             "display_name": self.display_name,
             **self.shooting.to_dict(),
         }

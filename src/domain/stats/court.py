@@ -91,6 +91,33 @@ def describe_shot(court_xy: tuple[float, float]) -> ShotLocation:
     return ShotLocation(distance_m=round(distance, 2), points=points, zone=zone)
 
 
+def court_reference() -> dict:
+    """Everything a client needs to draw the floor and the three-point line.
+
+    The stats endpoints return court positions in metres on this frame; without
+    the hoop centres and arc radius a client cannot draw the line the points sit
+    against, so it is shipped alongside them rather than duplicated in the UI.
+    """
+
+    return {
+        "length_m": COURT_LENGTH_M,
+        "width_m": COURT_WIDTH_M,
+        "hoop_inset_m": HOOP_INSET_M,
+        "hoops": {
+            "home": {"x_m": HOME_HOOP[0], "y_m": HOME_HOOP[1]},
+            "away": {"x_m": AWAY_HOOP[0], "y_m": AWAY_HOOP[1]},
+        },
+        "three_point_radius_m": THREE_POINT_RADIUS_M,
+        "corner_three_lateral_m": CORNER_THREE_LATERAL_M,
+    }
+
+
+def step_distance(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Straight-line court distance in metres between two projected points."""
+
+    return math.hypot(float(b[0]) - float(a[0]), float(b[1]) - float(a[1]))
+
+
 def is_on_court(court_xy: tuple[float, float], *, tolerance_m: float = 1.0) -> bool:
     """Whether a projected position is plausibly inside the court.
 

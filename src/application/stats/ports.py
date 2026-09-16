@@ -11,6 +11,18 @@ class ArtifactReadError(Exception):
     """The file exists but could not be read or parsed."""
 
 
+class RosterReaderPort(ABC):
+    """Reads the scout's own players, to tie tracks to real names by number.
+
+    Deliberately narrow: statistics only ever need one team's roster (the job's
+    team), never the whole database.
+    """
+
+    @abstractmethod
+    def list_by_owner_and_team(self, *, owner_user_id: str, team_id: str) -> list:
+        """The players on one of the scout's teams."""
+
+
 class ArtifactReaderPort(ABC):
     """Reads the files the processing service wrote for one job.
 

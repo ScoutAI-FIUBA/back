@@ -23,15 +23,19 @@ class ConnectionLike(Protocol):
     def cursor(self, *args: Any, **kwargs: Any) -> CursorLike: ...
 
 
+def _as_id(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
 def _row_to_match(row: dict[str, Any] | None) -> Match | None:
     if row is None:
         return None
     return Match(
-        id=row["id"],
+        id=_as_id(row["id"]),
         owner_user_id=row["owner_user_id"],
-        home_team_id=row["home_team_id"],
-        away_team_id=row["away_team_id"],
-        winner_team_id=row.get("winner_team_id"),
+        home_team_id=_as_id(row["home_team_id"]),
+        away_team_id=_as_id(row["away_team_id"]),
+        winner_team_id=_as_id(row.get("winner_team_id")),
         match_date=row["match_date"],
         description=row.get("description"),
         stats=row.get("stats"),
@@ -42,10 +46,10 @@ def _row_to_match(row: dict[str, Any] | None) -> Match | None:
 
 def _row_to_participant(row: dict[str, Any]) -> MatchParticipant:
     return MatchParticipant(
-        id=row["id"],
-        match_id=row["match_id"],
+        id=_as_id(row["id"]),
+        match_id=_as_id(row["match_id"]),
         owner_user_id=row["owner_user_id"],
-        player_id=row.get("player_id"),
+        player_id=_as_id(row.get("player_id")),
         team_side=row["team_side"],
         display_name=row["display_name"],
         jersey_number=row.get("jersey_number"),
@@ -194,7 +198,7 @@ class PostgresMatchRepository:
         wins = 0
         losses = 0
         for row in rows:
-            winner_team_id = row.get("winner_team_id")
+            winner_team_id = _as_id(row.get("winner_team_id"))
             result = "PENDING"
             if winner_team_id == team_id:
                 wins += 1
@@ -204,10 +208,10 @@ class PostgresMatchRepository:
                 result = "LOSS"
             results.append(
                 TeamMatchResultSummary(
-                    match_id=row["id"],
+                    match_id=_as_id(row["id"]),
                     match_date=row["match_date"],
-                    home_team_id=row["home_team_id"],
-                    away_team_id=row["away_team_id"],
+                    home_team_id=_as_id(row["home_team_id"]),
+                    away_team_id=_as_id(row["away_team_id"]),
                     winner_team_id=winner_team_id,
                     description=row.get("description"),
                     result=result,

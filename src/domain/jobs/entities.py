@@ -46,3 +46,11 @@ class ProcessingJob:
     # Reported by the processing service on completion; absent until then.
     artifacts: list[str] | None = None
     summary: dict | None = None
+    # Which pipeline side (0 or 1) is the scout's own team, chosen after
+    # processing. The pipeline splits players into two colourless sides; this is
+    # how a track gets tied back to a roster player by jersey number. None until
+    # the scout picks a side.
+    our_team_side: int | None = None
+    # Cached clip-similarity feature vector, computed once from the output and
+    # reused so comparing clips never re-reads storage. None until first needed.
+    features: dict | None = None
