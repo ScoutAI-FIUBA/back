@@ -32,9 +32,12 @@ def _required_env() -> dict[str, str]:
 def _apply_migrations(database_url: str) -> None:
     migration_dirs = [
         Path("src/infrastructure/auth/migrations"),
+        Path("src/infrastructure/players/migrations"),
         Path("src/infrastructure/team/migrations"),
+        Path("src/infrastructure/matches/migrations"),
         Path("src/infrastructure/video/migrations"),
         Path("src/infrastructure/clip_collections/migrations"),
+        Path("src/infrastructure/ownership/migrations"),
     ]
     with psycopg.connect(database_url) as conn:
         with conn.cursor() as cur:
@@ -58,10 +61,10 @@ def _seed_video_ownership_prerequisites(conn: psycopg.Connection) -> tuple[str, 
         )
         cur.execute(
             """
-            INSERT INTO teams (id, name, short_name, city, country, created_at)
-            VALUES (%s, %s, %s, %s, %s, NOW())
+            INSERT INTO teams (id, name, short_name, city, country, owner_user_id, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NOW())
             """,
-            (team_id, f"Team {team_id[:8]}", f"T{team_id[:4]}", "Buenos Aires", "Argentina"),
+            (team_id, f"Team {team_id[:8]}", f"T{team_id[:4]}", "Buenos Aires", "Argentina", user_id),
         )
         cur.execute(
             """

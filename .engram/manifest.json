@@ -58,6 +58,12 @@
       "prompts": 16
     },
     {
+      "id": "eced9ef3",
+      "created_by": "lautaro",
+      "created_at": "2026-08-22T18:18:47Z",
+      "sessions": 32,
+      "memories": 78,
+      "prompts": 115
       "id": "6b381dac",
       "created_by": "lautaro",
       "created_at": "2026-08-02T22:23:58Z",

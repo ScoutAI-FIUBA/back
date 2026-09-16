@@ -31,7 +31,9 @@ def _required_env() -> dict[str, str]:
 def _apply_migrations(database_url: str) -> None:
     migration_dirs = [
         Path("src/infrastructure/auth/migrations"),
+        Path("src/infrastructure/players/migrations"),
         Path("src/infrastructure/team/migrations"),
+        Path("src/infrastructure/matches/migrations"),
         Path("src/infrastructure/video/migrations"),
     ]
     with psycopg.connect(database_url) as conn:
@@ -132,7 +134,7 @@ def _player_payload() -> dict[str, object]:
         "birth_date": "1987-06-24",
         "height_cm": 170,
         "weight_kg": 72,
-        "primary_position": "RW",
+        "primary_position": "SF",
     }
 
 

@@ -12,6 +12,16 @@ from datetime import datetime
 from src.domain.team.entities import Team
 
 
+TEAM_DELETE_CONFLICT_KIND_MATCH = "match_related"
+TEAM_DELETE_CONFLICT_KIND_GENERIC = "generic"
+
+
+class TeamDeleteConflictError(Exception):
+    def __init__(self, message: str, *, kind: str = TEAM_DELETE_CONFLICT_KIND_GENERIC) -> None:
+        self.kind = kind
+        super().__init__(message)
+
+
 class TeamRepositoryPort(ABC):
     """Persistence contract for team aggregates."""
 
@@ -20,21 +30,21 @@ class TeamRepositoryPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_all(self) -> list[Team]:
+    def list_by_owner(self, *, owner_user_id: str) -> list[Team]:
         raise NotImplementedError
 
     @abstractmethod
-    def update(self, team_id: str, *, name: str, short_name: str, city: str, country: str) -> Team | None:
-        """Returns updated team or `None` when `team_id` is not found."""
-
+    def update(
+        self, team_id: str, *, owner_user_id: str, name: str, short_name: str, city: str, country: str
+    ) -> Team | None:
         raise NotImplementedError
 
     @abstractmethod
-    def delete(self, team_id: str) -> bool:
+    def delete(self, team_id: str, *, owner_user_id: str) -> bool:
         raise NotImplementedError
 
     @abstractmethod
-    def exists(self, team_id: str) -> bool:
+    def is_owned_by(self, *, team_id: str, owner_user_id: str) -> bool:
         raise NotImplementedError
 
 

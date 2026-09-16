@@ -14,6 +14,11 @@ PUBLIC_ROUTES = frozenset(
         "/auth/register",
         "/auth/login",
         "/auth/refresh",
+        # Machine-to-machine callback from the processing service. Exempt from
+        # USER auth because the caller has no session — it is NOT unauthenticated:
+        # the route itself requires a shared service token. Never add a route
+        # here unless it performs its own authentication.
+        "/internal/jobs/status",
     }
 )
 

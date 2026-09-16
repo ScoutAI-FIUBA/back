@@ -25,4 +25,5 @@ class Team:
     short_name: str
     city: str
     country: str
+    owner_user_id: str
     created_at: datetime

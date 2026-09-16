@@ -21,7 +21,11 @@ class PlayerRepositoryPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_all(self) -> list[Player]:
+    def list_by_owner(self, *, owner_user_id: str) -> list[Player]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_by_id(self, *, player_id: str, owner_user_id: str) -> Player | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -29,27 +33,27 @@ class PlayerRepositoryPort(ABC):
         self,
         *,
         player_id: str,
+        owner_user_id: str,
         first_name: str,
         last_name: str,
         birth_date: date,
         height_cm: int,
         weight_kg: int,
         primary_position: str,
+        jersey_number: str | None,
     ) -> Player | None:
         """Returns updated player or `None` when `player_id` does not exist."""
 
         raise NotImplementedError
 
     @abstractmethod
-    def delete(self, player_id: str) -> bool:
+    def delete(self, player_id: str, *, owner_user_id: str) -> bool:
         raise NotImplementedError
 
     @abstractmethod
-    def assign_team(self, *, player_id: str, team_id: str) -> Player | None:
-        """Assigns team and returns player, or `None` if player is missing."""
-
+    def assign_team(self, *, player_id: str, owner_user_id: str, team_id: str) -> Player | None:
         raise NotImplementedError
 
     @abstractmethod
-    def list_by_team(self, team_id: str) -> list[Player]:
+    def list_by_owner_and_team(self, *, owner_user_id: str, team_id: str) -> list[Player]:
         raise NotImplementedError

@@ -21,7 +21,8 @@
   "birth_date": "2007-07-13",
   "height_cm": 180,
   "weight_kg": 72,
-  "primary_position": "RW"
+  "primary_position": "RW",
+  "jersey_number": "10"
 }
 ```
 
@@ -32,9 +33,17 @@ Field constraints:
 - `height_cm`: integer, `> 0`, `<= 300`
 - `weight_kg`: integer, `> 0`, `<= 400`
 - `primary_position`: string, 1..120 chars
+- `jersey_number`: optional string of one or two digits (`^[0-9]{1,2}$`), or `null`
+
+`jersey_number` is text rather than an integer so that `"00"` stays distinct from
+`"0"`, and so the value matches the string form the CV pipeline reads from
+jerseys. Numeric JSON input is coerced to text (`7` becomes `"7"`) and a blank or
+whitespace-only string is stored as `null`. Omitting the field on update clears
+any existing number.
 
 Player response includes:
 - `team_id`: nullable UUID, assigned team or `null`.
+- `jersey_number`: nullable string, the player's number or `null`.
 
 ## Endpoints
 
@@ -53,6 +62,7 @@ Player response includes:
     "height_cm": 180,
     "weight_kg": 72,
     "primary_position": "RW",
+    "jersey_number": "10",
     "team_id": null
   }
 }
@@ -76,6 +86,7 @@ Player response includes:
       "height_cm": 180,
       "weight_kg": 72,
       "primary_position": "RW",
+      "jersey_number": "10",
       "team_id": "4c11b90f-a348-42c8-a6f0-2db1416cb6d5"
     }
   ]
@@ -85,6 +96,7 @@ Player response includes:
 ### PUT /players/{player_id}/team/{team_id}
 - Associates a player to an existing team.
 - Path params: `player_id` (UUID), `team_id` (UUID).
+- Leaves `jersey_number` untouched.
 - `200 OK` response:
 
 ```json
@@ -97,6 +109,7 @@ Player response includes:
     "height_cm": 180,
     "weight_kg": 72,
     "primary_position": "RW",
+    "jersey_number": "10",
     "team_id": "4c11b90f-a348-42c8-a6f0-2db1416cb6d5"
   }
 }
@@ -121,6 +134,7 @@ Player response includes:
     "height_cm": 180,
     "weight_kg": 72,
     "primary_position": "RW",
+    "jersey_number": "10",
     "team_id": null
   }
 }
@@ -169,6 +183,10 @@ Player response includes:
   - `weight_kg` (`INTEGER`, check `> 0`)
 - `primary_position` (`VARCHAR(120)`)
 - `team_id` (`UUID`, nullable, FK to `teams.id` with `ON DELETE SET NULL`)
+- `jersey_number` (`VARCHAR(2)`, nullable, check `^[0-9]{1,2}$`)
 
 Association migration:
 - `src/infrastructure/team/migrations/002_player_team_association.sql`
+
+Jersey number migration:
+- `src/infrastructure/players/migrations/001_player_jersey_number.sql`
