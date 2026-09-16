@@ -312,7 +312,6 @@ def build_http_dependencies(
     )
     team_access = TeamOwnershipAccessAdapter(teams=teams_repo)
     clip_exporter = FFmpegClipExporter(storage=video_storage)
-    team_access = TeamExistsAccessAdapter(teams=teams_repo)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
     refresh_tokens = OpaqueRefreshTokenService(secret=refresh_secret)
@@ -484,6 +483,7 @@ def build_http_dependencies(
         ),
         court_positions_use_case=GetCourtPositionsUseCase(
             jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
+        ),
         export_clip_item_use_case=ExportClipItemUseCase(
             collections=clip_collections_repo,
             videos=videos_repo,
