@@ -91,6 +91,22 @@ def number_by_track(
     return mapping
 
 
+def number_by_stable(numbers_document: dict | None) -> dict[str, str]:
+    """`stable_player_id -> jersey number`, confirmed v2 readings only."""
+
+    if not numbers_document:
+        return {}
+    mapping: dict[str, str] = {}
+    for player in numbers_document.get("players") or []:
+        if player.get("status") != "confirmed":
+            continue
+        number = player.get("number")
+        stable_id = player.get("stable_player_id")
+        if stable_id is not None and number not in (None, "", "unknown"):
+            mapping[str(stable_id)] = str(number)
+    return mapping
+
+
 def _link_roster(
     player: PlayerStats, *, roster: dict[str, dict] | None, our_team_side: int | None
 ) -> None:
@@ -119,25 +135,59 @@ def build_game_stats(
     roster: dict[str, dict] | None = None,
     our_team_side: int | None = None,
     stable_to_track: dict[str, int] | None = None,
+    track_to_stable: dict[int, str] | None = None,
+    observations_by_stable: dict[str, int] | None = None,
 ) -> GameStats:
     """Assemble the box score for one processed video.
 
     When `roster` (jersey number -> roster player) and `our_team_side` are given,
-    tracks on that side are tied to the scout's real players by number; without
-    them every track stays anonymous, which is the behaviour before a side is
-    picked.
+    tracks on that side are tied to the scout's real players by number.
+
+    `track_to_stable` turns v2 output into real players: v2 emits many segmented
+    `track_id`s per person, so players are grouped by `stable_player_id`. Same-team
+    same-number fragments are then merged, and `observations_by_stable` (frames
+    per player) picks the five most-present per team as the ten on court. Without
+    `track_to_stable` (v1), grouping stays per `track_id` exactly as before.
     """
 
     teams_of = team_by_track(teams_document)
     numbers_of = number_by_track(numbers_document, stable_to_track=stable_to_track)
+    numbers_stable = number_by_stable(numbers_document)
+    track_to_stable = track_to_stable or {}
+    observations_by_stable = observations_by_stable or {}
 
-    players: dict[int, PlayerStats] = {}
+    def identity(track_id: int):
+        stable_id = track_to_stable.get(track_id)
+        return (stable_id, stable_id) if stable_id is not None else (track_id, None)
+
+    def jersey_for(track_id: int, stable_id: str | None) -> str | None:
+        if stable_id is not None:
+            return numbers_stable.get(stable_id)
+        return numbers_of.get(track_id)
+
+    players: dict = {}
     teams: dict[int, TeamStats] = {}
     shot_rows: list[dict] = []
 
     raw_shots = (shots_document or {}).get("shots") or []
     unattributed = 0
     unprojected = 0
+
+    def player_for(track_id: int, team_id: int | None) -> PlayerStats:
+        key, stable_id = identity(track_id)
+        player = players.get(key)
+        if player is None:
+            player = PlayerStats(
+                track_id=track_id,
+                stable_player_id=stable_id,
+                team_id=None if team_id is None else int(team_id),
+                jersey_number=jersey_for(track_id, stable_id),
+                observations=observations_by_stable.get(stable_id, 0) if stable_id else 0,
+            )
+            players[key] = player
+        elif player.team_id is None and team_id is not None:
+            player.team_id = int(team_id)
+        return player
 
     for shot in raw_shots:
         court_xy = shot.get("shot_origin_court_xy_m")
@@ -155,18 +205,13 @@ def build_game_stats(
         if team_id is None and track_id is not None:
             team_id = teams_of.get(int(track_id))
 
+        stable_id = None
         if track_id is None:
             unattributed += 1
         else:
             track_id = int(track_id)
-            player = players.setdefault(
-                track_id,
-                PlayerStats(
-                    track_id=track_id,
-                    team_id=team_id if team_id is None else int(team_id),
-                    jersey_number=numbers_of.get(track_id),
-                ),
-            )
+            player = player_for(track_id, team_id)
+            stable_id = player.stable_player_id
             player.shooting.add(made=made, points=location.points, zone=location.zone)
 
         if team_id is not None:
@@ -177,8 +222,9 @@ def build_game_stats(
             {
                 "shot_id": shot.get("event_id"),
                 "track_id": track_id,
+                "stable_player_id": stable_id,
                 "team_id": None if team_id is None else int(team_id),
-                "jersey_number": None if track_id is None else numbers_of.get(track_id),
+                "jersey_number": None if track_id is None else jersey_for(track_id, stable_id),
                 "made": made,
                 # The raw outcome is kept so a shot chart can tell a miss (draw
                 # red) from an undetermined result (draw neither), which the
@@ -200,13 +246,16 @@ def build_game_stats(
     # Every tracked player appears, not only those who shot, so the interface can
     # list a full squad rather than only scorers.
     for track_id, team_id in sorted(teams_of.items()):
-        player = players.setdefault(
-            track_id,
-            PlayerStats(track_id=track_id, team_id=team_id, jersey_number=numbers_of.get(track_id)),
-        )
-        if player.team_id is None:
-            player.team_id = team_id
+        player_for(track_id, team_id)
         teams.setdefault(team_id, TeamStats(team_id=team_id))
+
+    # v2 fragments one player into several stable ids that still read the same
+    # number; merge those on (team, confirmed number) so a player is counted once.
+    if track_to_stable:
+        players = _merge_number_fragments(players)
+
+    # The ten on court are the five most-tracked players per team.
+    _mark_on_court(players)
 
     for player in players.values():
         if player.team_id is not None and player.team_id in teams:
@@ -215,21 +264,29 @@ def build_game_stats(
     for player in players.values():
         _link_roster(player, roster=roster, our_team_side=our_team_side)
 
-    # Now that tracks carry a roster identity, stamp it onto their shot rows too,
-    # so a shot chart can label a marker without a second lookup.
+    # Stamp the resolved roster identity onto shot rows so a chart can label a
+    # marker without a second lookup. Join on the shot's player key.
     roster_of = {
-        track_id: (player.roster_player_id, player.roster_name)
-        for track_id, player in players.items()
+        (p.stable_player_id if p.stable_player_id is not None else p.track_id): (
+            p.roster_player_id,
+            p.roster_name,
+        )
+        for p in players.values()
     }
     for row in shot_rows:
-        linked = roster_of.get(row["track_id"], (None, None))
-        row["roster_player_id"], row["roster_name"] = linked
+        key = row["stable_player_id"] if row["stable_player_id"] is not None else row["track_id"]
+        row["roster_player_id"], row["roster_name"] = roster_of.get(key, (None, None))
 
     identified = sum(1 for player in players.values() if player.jersey_number)
     linked_count = sum(1 for player in players.values() if player.roster_player_id)
+    on_court_count = sum(1 for player in players.values() if player.on_court)
+    ordered = sorted(
+        players.values(),
+        key=lambda p: (not p.on_court, p.team_id if p.team_id is not None else 99, -p.observations),
+    )
     return GameStats(
         teams=[teams[key] for key in sorted(teams)],
-        players=sorted(players.values(), key=lambda p: (p.team_id or -1, p.track_id)),
+        players=ordered,
         shots=shot_rows,
         coverage={
             "shots_detected": len(raw_shots),
@@ -237,6 +294,9 @@ def build_game_stats(
             "shots_without_court_position": unprojected,
             "shots_without_shooter": unattributed,
             "players_tracked": len(players),
+            # The five most-present players per team: the ten actually on court,
+            # versus refs/bench/fragments that also get tracked.
+            "players_on_court": on_court_count,
             # TODO(jersey-numbers): low today; UI can watch this ratio to decide
             # whether to show numbers or fall back to "Player N".
             "players_with_jersey_number": identified,
@@ -247,6 +307,60 @@ def build_game_stats(
             "not_measured": ["rebounds", "assists", "turnovers", "steals", "fouls", "minutes"],
         },
     )
+
+
+def _merge_number_fragments(players: dict) -> dict:
+    """Collapse players that share a team and a confirmed number into one.
+
+    v2 can split a single player across segments into several stable ids that all
+    read, say, #7 on team 1. Those are the same person; merge their shooting and
+    observations so the box score counts them once. Players with no number, or a
+    unique (team, number), are left untouched.
+    """
+
+    merged: dict = {}
+    by_number: dict[tuple[int, str], object] = {}
+    for key, player in players.items():
+        if player.jersey_number is None or player.team_id is None:
+            merged[key] = player
+            continue
+        number_key = (player.team_id, player.jersey_number)
+        primary_key = by_number.get(number_key)
+        if primary_key is None:
+            by_number[number_key] = key
+            merged[key] = player
+            continue
+        primary = merged[primary_key]
+        primary.observations += player.observations
+        primary.shooting.attempted += player.shooting.attempted
+        primary.shooting.made += player.shooting.made
+        primary.shooting.two_point_attempted += player.shooting.two_point_attempted
+        primary.shooting.two_point_made += player.shooting.two_point_made
+        primary.shooting.three_point_attempted += player.shooting.three_point_attempted
+        primary.shooting.three_point_made += player.shooting.three_point_made
+        for zone, tally in player.shooting.by_zone.items():
+            bucket = primary.shooting.by_zone.setdefault(zone, {"made": 0, "attempted": 0})
+            bucket["made"] += tally["made"]
+            bucket["attempted"] += tally["attempted"]
+    return merged
+
+
+def _mark_on_court(players: dict) -> None:
+    """Flag the five most-tracked players per team as on court (ten total).
+
+    Only meaningful when observations are known (v2); with no observation counts
+    nothing is flagged and the client falls back to listing everyone.
+    """
+
+    by_team: dict[int, list[PlayerStats]] = {}
+    for player in players.values():
+        if player.team_id is None or player.observations <= 0:
+            continue
+        by_team.setdefault(player.team_id, []).append(player)
+    for roster in by_team.values():
+        roster.sort(key=lambda p: p.observations, reverse=True)
+        for player in roster[:5]:
+            player.on_court = True
 
 
 def _shot_result(outcome: str | None) -> str:
@@ -269,9 +383,12 @@ def build_shot_chart(
     teams_document: dict | None,
     numbers_document: dict | None,
     track_id: int | None = None,
+    stable_player_id: str | None = None,
     roster: dict[str, dict] | None = None,
     our_team_side: int | None = None,
     stable_to_track: dict[str, int] | None = None,
+    track_to_stable: dict[int, str] | None = None,
+    observations_by_stable: dict[str, int] | None = None,
 ) -> dict:
     """Every located shot as a court marker, grouped by the player who took it.
 
@@ -279,7 +396,7 @@ def build_shot_chart(
     rules as the totals it must agree with. Each marker carries `made` and
     `result` for colouring (made green, missed red) and its court position in
     metres; `court` ships the geometry needed to draw the floor and arc under
-    them. `track_id` narrows the chart to one player without changing any total.
+    them. Narrow to one player with `stable_player_id` (v2) or `track_id` (v1).
     """
 
     game = build_game_stats(
@@ -289,18 +406,26 @@ def build_shot_chart(
         roster=roster,
         our_team_side=our_team_side,
         stable_to_track=stable_to_track,
+        track_to_stable=track_to_stable,
+        observations_by_stable=observations_by_stable,
     ).to_dict()
 
-    display_of = {player["track_id"]: player["display_name"] for player in game["players"]}
+    def player_key(entry: dict):
+        return entry["stable_player_id"] if entry.get("stable_player_id") is not None else entry["track_id"]
+
+    display_of = {player_key(p): p["display_name"] for p in game["players"]}
     markers: list[dict] = []
-    per_player: dict[int, dict] = {}
+    per_player: dict = {}
 
     for row in game["shots"]:
         if track_id is not None and row["track_id"] != track_id:
             continue
+        if stable_player_id is not None and row.get("stable_player_id") != stable_player_id:
+            continue
         marker = {
             "shot_id": row["shot_id"],
             "track_id": row["track_id"],
+            "stable_player_id": row.get("stable_player_id"),
             "team_id": row["team_id"],
             "jersey_number": row["jersey_number"],
             "roster_player_id": row.get("roster_player_id"),
@@ -318,13 +443,15 @@ def build_shot_chart(
         }
         markers.append(marker)
         if row["track_id"] is not None:
+            key = player_key(row)
             bucket = per_player.setdefault(
-                row["track_id"],
+                key,
                 {
                     "track_id": row["track_id"],
+                    "stable_player_id": row.get("stable_player_id"),
                     "team_id": row["team_id"],
                     "jersey_number": row["jersey_number"],
-                    "display_name": display_of.get(row["track_id"], f"Player {row['track_id']}"),
+                    "display_name": display_of.get(key, f"Player {row['track_id']}"),
                     "shots": [],
                 },
             )
@@ -333,10 +460,11 @@ def build_shot_chart(
     return {
         "court": court_reference(),
         "shots": markers,
-        "players": [per_player[key] for key in sorted(per_player)],
+        "players": [per_player[key] for key in sorted(per_player, key=str)],
         "coverage": {
             **game["coverage"],
             "shots_charted": len(markers),
             "filtered_to_track_id": track_id,
+            "filtered_to_stable_player_id": stable_player_id,
         },
     }

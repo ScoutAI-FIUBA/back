@@ -345,6 +345,55 @@ class TestV2Shapes(unittest.TestCase):
         self.assertEqual(shooter["jersey_number"], "7")
 
 
+class TestV2Grouping(unittest.TestCase):
+    """v2 groups many segmented track_ids into real players (by stable id)."""
+
+    def test_track_fragments_collapse_into_one_player(self) -> None:
+        teams = {"assignments_by_track_id": {"100": 1, "101": 1, "200": 0}}
+        numbers = {"players": [{"stable_player_id": "pA", "number": "7", "status": "confirmed"}]}
+        t2s = {100: "pA", 101: "pA", 200: "pB"}
+        obs = {"pA": 500, "pB": 400}
+        doc = shots(
+            shot(shooter_track_id=100, shooter_team_id=1),
+            shot(event_id=2, shooter_track_id=101, shooter_team_id=1, outcome="missed"),
+        )
+        g = build_game_stats(
+            shots_document=doc, teams_document=teams, numbers_document=numbers,
+            track_to_stable=t2s, observations_by_stable=obs,
+        ).to_dict()
+        self.assertEqual(len(g["players"]), 2)  # pA (from 100+101) and pB, not 3
+        pa = next(p for p in g["players"] if p["stable_player_id"] == "pA")
+        self.assertEqual(pa["jersey_number"], "7")
+        self.assertEqual(pa["field_goals_attempted"], 2)  # both fragments' shots
+
+    def test_same_team_same_number_fragments_are_merged(self) -> None:
+        teams = {"assignments_by_track_id": {"1": 1, "2": 1}}
+        numbers = {"players": [
+            {"stable_player_id": "s1", "number": "7", "status": "confirmed"},
+            {"stable_player_id": "s2", "number": "7", "status": "confirmed"},
+        ]}
+        g = build_game_stats(
+            shots_document=shots(), teams_document=teams, numbers_document=numbers,
+            track_to_stable={1: "s1", 2: "s2"}, observations_by_stable={"s1": 300, "s2": 200},
+        ).to_dict()
+        sevens = [p for p in g["players"] if p["jersey_number"] == "7"]
+        self.assertEqual(len(sevens), 1)
+        self.assertEqual(sevens[0]["observations"], 500)  # 300 + 200 merged
+
+    def test_five_most_present_per_team_are_on_court(self) -> None:
+        teams = {"assignments_by_track_id": {str(i): 1 for i in range(6)}}
+        t2s = {i: f"p{i}" for i in range(6)}
+        obs = {f"p{i}": (i + 1) * 100 for i in range(6)}  # p0 least present
+        g = build_game_stats(
+            shots_document=shots(), teams_document=teams, numbers_document={},
+            track_to_stable=t2s, observations_by_stable=obs,
+        ).to_dict()
+        on_court = [p for p in g["players"] if p["on_court"]]
+        self.assertEqual(len(on_court), 5)
+        self.assertTrue(all(p["stable_player_id"] != "p0" for p in on_court))
+        self.assertEqual(g["coverage"]["players_on_court"], 5)
+
+
 class TestShotChart(unittest.TestCase):
     """The same shots as the box score, reshaped for drawing on a court."""
 

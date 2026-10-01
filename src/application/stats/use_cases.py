@@ -98,6 +98,63 @@ def stable_to_track_from_rows(rows: list[dict]) -> dict[str, int]:
     return mapping
 
 
+def track_to_stable_from_rows(rows: list[dict]) -> dict[int, str]:
+    """`track_id -> stable_player_id`, for grouping v2's many segmented tracks."""
+
+    mapping: dict[int, str] = {}
+    for row in rows:
+        stable_id = row.get("stable_player_id")
+        track_id = row.get("track_id", row.get("player_id"))
+        if stable_id is None or track_id is None:
+            continue
+        try:
+            mapping[int(track_id)] = str(stable_id)
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
+def observations_by_stable_from_rows(rows: list[dict]) -> dict[str, int]:
+    """`stable_player_id -> frames tracked`, to rank who was actually on court."""
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        stable_id = row.get("stable_player_id")
+        if stable_id is not None:
+            counts[str(stable_id)] = counts.get(str(stable_id), 0) + 1
+    return counts
+
+
+def _is_v2_output(teams_document: dict | None, numbers_document: dict | None) -> bool:
+    """Whether the output is the v2 (SAM 3.1) shape that groups by stable id."""
+
+    return bool(
+        (teams_document or {}).get("assignments_by_track_id") is not None
+        or (numbers_document or {}).get("players") is not None
+    )
+
+
+def _v2_identity_maps(
+    artifacts: "ArtifactReaderPort",
+    results_key: str,
+    teams_document: dict | None,
+    numbers_document: dict | None,
+) -> tuple[dict[int, str], dict[str, int]]:
+    """Build (track_id -> stable_id, stable_id -> frames) for v2 output.
+
+    Reads the projected tracks (which carry both ids) only for v2 jobs, so v1
+    jobs skip the extra fetch. Returns empty maps when not v2 or on read error.
+    """
+
+    if not _is_v2_output(teams_document, numbers_document):
+        return {}, {}
+    try:
+        rows = read_position_rows(artifacts, results_key)
+    except ArtifactReadError:
+        return {}, {}
+    return track_to_stable_from_rows(rows), observations_by_stable_from_rows(rows)
+
+
 def read_position_rows(artifacts: "ArtifactReaderPort", results_key: str) -> list[dict]:
     """Projected-track rows from whichever position file the pipeline wrote."""
 
@@ -165,13 +222,15 @@ class GetGameStatsUseCase:
             )
 
         roster = self._roster_for(job, user_id=user_id)
+        track_to_stable, observations = _v2_identity_maps(self._artifacts, key, teams, numbers)
         stats = build_game_stats(
             shots_document=shots,
             teams_document=teams,
             numbers_document=numbers,
             roster=roster,
             our_team_side=job.our_team_side,
-            stable_to_track=self._stable_to_track_for(numbers, key),
+            track_to_stable=track_to_stable,
+            observations_by_stable=observations,
         )
         return {
             "job_id": job.id,
@@ -179,17 +238,6 @@ class GetGameStatsUseCase:
             "our_team_side": job.our_team_side,
             **stats.to_dict(),
         }
-
-    def _stable_to_track_for(self, numbers: dict | None, results_key: str) -> dict[str, int] | None:
-        # v2 keys jersey numbers by stable_player_id; only then (and only when a
-        # number actually confirmed) do we pay to read the projected tracks that
-        # bridge stable ids back to track ids.
-        if not _numbers_need_stable_map(numbers):
-            return None
-        try:
-            return stable_to_track_from_rows(read_position_rows(self._artifacts, results_key))
-        except ArtifactReadError:
-            return None
 
     def _roster_for(self, job, *, user_id: str) -> dict[str, dict] | None:
         if job.our_team_side is None:
@@ -219,7 +267,13 @@ class GetShotChartUseCase:
         self._roster = roster
 
     def execute(
-        self, *, user_id: str, team_id: str, job_id: str, track_id: int | None = None
+        self,
+        *,
+        user_id: str,
+        team_id: str,
+        job_id: str,
+        track_id: int | None = None,
+        stable_player_id: str | None = None,
     ) -> dict:
         job = self._loader.load(user_id=user_id, team_id=team_id, job_id=job_id)
         key = job.results_key
@@ -242,20 +296,17 @@ class GetShotChartUseCase:
             roster = roster_by_number(
                 self._roster.list_by_owner_and_team(owner_user_id=user_id, team_id=job.team_id)
             )
-        stable_to_track = None
-        if _numbers_need_stable_map(numbers):
-            try:
-                stable_to_track = stable_to_track_from_rows(read_position_rows(self._artifacts, key))
-            except ArtifactReadError:
-                stable_to_track = None
+        track_to_stable, observations = _v2_identity_maps(self._artifacts, key, teams, numbers)
         chart = build_shot_chart(
             shots_document=shots,
             teams_document=teams,
             numbers_document=numbers,
             track_id=track_id,
+            stable_player_id=stable_player_id,
             roster=roster,
             our_team_side=job.our_team_side,
-            stable_to_track=stable_to_track,
+            track_to_stable=track_to_stable,
+            observations_by_stable=observations,
         )
         return {
             "job_id": job.id,
