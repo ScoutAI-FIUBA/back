@@ -19,6 +19,7 @@ from src.application.jobs.ports import JobRepositoryPort, TeamAccessPort
 from src.application.stats.aggregation import (
     build_game_stats,
     build_shot_chart,
+    number_by_stable,
     number_by_track,
     team_by_track,
 )
@@ -514,16 +515,14 @@ class GetCourtPositionsUseCase:
         teams_document = self._artifacts.read_json(results_key=key, filename=TEAMS_FILE)
         numbers_document = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
         teams_of = team_by_track(teams_document)
-        # The rows are already in hand, so bridge v2's stable-id numbers for free.
-        numbers_of = number_by_track(
-            numbers_document, stable_to_track=stable_to_track_from_rows(rows)
-        )
+        numbers_of = number_by_track(numbers_document)
+        numbers_stable = number_by_stable(numbers_document)
 
         sample_every = max(1, int(sample_every))
-        paths: dict[int, dict] = {}
-        movement: dict[int, dict] = {}
+        paths: dict = {}
+        movement: dict = {}
         discarded = 0
-        seen_per_track: dict[int, int] = {}
+        seen_per_player: dict = {}
 
         for row in rows:
             court_xy = row.get("court_xy_m")
@@ -540,15 +539,22 @@ class GetCourtPositionsUseCase:
                 continue
 
             track_id = int(track_id)
+            # v2 splits a player across many segmented track_ids but tags each row
+            # with a stable_player_id; group the path by that so one player is one
+            # path, not a dozen fragments. v1 rows have no stable id -> by track.
+            stable_id = row.get("stable_player_id")
+            pkey = str(stable_id) if stable_id is not None else track_id
+            jersey = numbers_stable.get(str(stable_id)) if stable_id is not None else numbers_of.get(track_id)
             point = (float(court_xy[0]), float(court_xy[1]))
             path = paths.setdefault(
-                track_id,
+                pkey,
                 {
                     "track_id": track_id,
+                    "stable_player_id": stable_id,
                     # player_positions rows carry the team directly; the stats
                     # pipeline's rows do not, so fall back to the assignments file.
                     "team_id": row.get("team_id", teams_of.get(track_id)),
-                    "jersey_number": numbers_of.get(track_id),
+                    "jersey_number": jersey,
                     "positions": [],
                 },
             )
@@ -557,7 +563,7 @@ class GetCourtPositionsUseCase:
             # distance summed from a downsampled path would understate how far a
             # player actually ran.
             summary = movement.setdefault(
-                track_id, {"samples": 0, "sum_x": 0.0, "sum_y": 0.0, "distance_m": 0.0, "prev": None}
+                pkey, {"samples": 0, "sum_x": 0.0, "sum_y": 0.0, "distance_m": 0.0, "prev": None}
             )
             if summary["prev"] is not None:
                 summary["distance_m"] += step_distance(summary["prev"], point)
@@ -566,8 +572,8 @@ class GetCourtPositionsUseCase:
             summary["sum_x"] += point[0]
             summary["sum_y"] += point[1]
 
-            index = seen_per_track.get(track_id, 0)
-            seen_per_track[track_id] = index + 1
+            index = seen_per_player.get(pkey, 0)
+            seen_per_player[pkey] = index + 1
             if index % sample_every:
                 continue
 
@@ -579,8 +585,8 @@ class GetCourtPositionsUseCase:
                 }
             )
 
-        for track_id, path in paths.items():
-            summary = movement[track_id]
+        for pkey, path in paths.items():
+            summary = movement[pkey]
             samples = summary["samples"]
             path["movement"] = {
                 "samples": samples,
@@ -595,7 +601,7 @@ class GetCourtPositionsUseCase:
             "job_id": job.id,
             "video_id": job.video_id,
             "court": {"length_m": COURT_LENGTH_M, "width_m": COURT_WIDTH_M},
-            "players": [paths[key_] for key_ in sorted(paths)],
+            "players": [paths[key_] for key_ in sorted(paths, key=str)],
             "coverage": {
                 "source_file": source_file,
                 "records_read": len(rows),
