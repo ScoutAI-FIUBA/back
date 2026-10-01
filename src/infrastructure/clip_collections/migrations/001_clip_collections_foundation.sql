@@ -1,6 +1,20 @@
--- The block that dropped the pre-virtual-clip tables when their old columns
--- were present has been removed. It was a one-time reset, and the migration
--- runner used to replay this file on every deploy.
+-- Converges the pre-virtual-clip schema: those tables stored one row per
+-- exported file, so there is no in-place upgrade to the start_ms/end_ms shape.
+-- Guarded on the old columns, so it is inert on a current database, and the
+-- migration runner records this file once rather than replaying it per deploy.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = CURRENT_SCHEMA()
+          AND table_name = 'clip_collection_items'
+          AND column_name IN ('filename', 'storage_key', 'cloudflare_url')
+    ) THEN
+        DROP TABLE IF EXISTS clip_collection_items;
+        DROP TABLE IF EXISTS clip_collections;
+    END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS clip_collections (
     id UUID PRIMARY KEY,
