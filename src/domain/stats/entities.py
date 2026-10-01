@@ -102,6 +102,14 @@ class PlayerStats:
     # scout's roster (own team, matched by jersey number). Opponents stay
     # unlinked, so this is None for them and the label falls back to the number.
     roster_name: str | None = None
+    # v2's real identity (one per player, versus many segmented `track_id`s).
+    # Present only on v2 output; None on v1.
+    stable_player_id: str | None = None
+    # How many frames this player was tracked, used to rank who was actually on
+    # court (10 players) versus refs/bench/fragments. 0 when unknown.
+    observations: int = 0
+    # True for the most-present five per team — the players on court.
+    on_court: bool = False
     shooting: ShotTally = field(default_factory=ShotTally)
 
     @property
@@ -110,13 +118,18 @@ class PlayerStats:
             return self.roster_name
         if self.jersey_number:
             return f"#{self.jersey_number}"
+        if self.stable_player_id:
+            return self.stable_player_id
         return f"Player {self.track_id}"
 
     def to_dict(self) -> dict:
         return {
             "track_id": self.track_id,
+            "stable_player_id": self.stable_player_id,
             "team_id": self.team_id,
             "jersey_number": self.jersey_number,
+            "observations": self.observations,
+            "on_court": self.on_court,
             "roster_player_id": self.roster_player_id,
             "roster_name": self.roster_name,
             "display_name": self.display_name,

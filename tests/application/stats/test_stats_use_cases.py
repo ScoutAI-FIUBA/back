@@ -398,6 +398,20 @@ class TestGetCourtPositions(unittest.TestCase):
         self.assertEqual(len(by_track[9]["positions"]), 2)
         self.assertEqual(len(by_track[5]["positions"]), 1)
 
+    def test_v2_segmented_tracks_group_into_one_path_per_stable_player(self) -> None:
+        """A v2 player split across segment track_ids is one path, not many."""
+
+        rows = [
+            {"frame_index": 0, "track_id": 100, "stable_player_id": "pX", "court_xy_m": [5.0, 7.5]},
+            {"frame_index": 1, "track_id": 101, "stable_player_id": "pX", "court_xy_m": [6.0, 7.5]},
+            {"frame_index": 0, "track_id": 200, "stable_player_id": "pY", "court_xy_m": [8.0, 7.5]},
+        ]
+        result = self.build(rows).execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(len(result["players"]), 2)
+        by_stable = {p["stable_player_id"]: p for p in result["players"]}
+        self.assertEqual(len(by_stable["pX"]["positions"]), 2)
+        self.assertEqual(len(by_stable["pY"]["positions"]), 1)
+
     def test_court_dimensions_are_included_for_drawing(self) -> None:
         result = self.build([position_row(0, 9, 6.4, 10.6)]).execute(
             user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID

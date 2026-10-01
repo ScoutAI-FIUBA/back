@@ -19,6 +19,7 @@ from src.application.jobs.ports import JobRepositoryPort, TeamAccessPort
 from src.application.stats.aggregation import (
     build_game_stats,
     build_shot_chart,
+    number_by_stable,
     number_by_track,
     team_by_track,
 )
@@ -65,6 +66,106 @@ def roster_by_number(players: list) -> dict[str, dict]:
             "name": f"{player.first_name} {player.last_name}".strip(),
         }
     return {number: value for number, value in mapping.items() if seen[number] == 1}
+
+
+def _numbers_need_stable_map(numbers_document: dict | None) -> bool:
+    """True only when numbers are the v2 shape with at least one confirmed read.
+
+    Lets the game-stats read skip the extra projected-tracks fetch for v1 output
+    and for v2 output that confirmed nothing (the common case today).
+    """
+
+    if not numbers_document:
+        return False
+    return any(
+        player.get("status") == "confirmed" and player.get("number") not in (None, "", "unknown")
+        for player in numbers_document.get("players") or []
+    )
+
+
+def stable_to_track_from_rows(rows: list[dict]) -> dict[str, int]:
+    """`stable_player_id -> track_id`, from projected-track rows that carry both."""
+
+    mapping: dict[str, int] = {}
+    for row in rows:
+        stable_id = row.get("stable_player_id")
+        track_id = row.get("track_id", row.get("player_id"))
+        if stable_id is None or track_id is None:
+            continue
+        try:
+            mapping[str(stable_id)] = int(track_id)
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
+def track_to_stable_from_rows(rows: list[dict]) -> dict[int, str]:
+    """`track_id -> stable_player_id`, for grouping v2's many segmented tracks."""
+
+    mapping: dict[int, str] = {}
+    for row in rows:
+        stable_id = row.get("stable_player_id")
+        track_id = row.get("track_id", row.get("player_id"))
+        if stable_id is None or track_id is None:
+            continue
+        try:
+            mapping[int(track_id)] = str(stable_id)
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
+def observations_by_stable_from_rows(rows: list[dict]) -> dict[str, int]:
+    """`stable_player_id -> frames tracked`, to rank who was actually on court."""
+
+    counts: dict[str, int] = {}
+    for row in rows:
+        stable_id = row.get("stable_player_id")
+        if stable_id is not None:
+            counts[str(stable_id)] = counts.get(str(stable_id), 0) + 1
+    return counts
+
+
+def _is_v2_output(teams_document: dict | None, numbers_document: dict | None) -> bool:
+    """Whether the output is the v2 (SAM 3.1) shape that groups by stable id."""
+
+    return bool(
+        (teams_document or {}).get("assignments_by_track_id") is not None
+        or (numbers_document or {}).get("players") is not None
+    )
+
+
+def _v2_identity_maps(
+    artifacts: "ArtifactReaderPort",
+    results_key: str,
+    teams_document: dict | None,
+    numbers_document: dict | None,
+) -> tuple[dict[int, str], dict[str, int]]:
+    """Build (track_id -> stable_id, stable_id -> frames) for v2 output.
+
+    Reads the projected tracks (which carry both ids) only for v2 jobs, so v1
+    jobs skip the extra fetch. Returns empty maps when not v2 or on read error.
+    """
+
+    if not _is_v2_output(teams_document, numbers_document):
+        return {}, {}
+    try:
+        rows = read_position_rows(artifacts, results_key)
+    except ArtifactReadError:
+        return {}, {}
+    return track_to_stable_from_rows(rows), observations_by_stable_from_rows(rows)
+
+
+def read_position_rows(artifacts: "ArtifactReaderPort", results_key: str) -> list[dict]:
+    """Projected-track rows from whichever position file the pipeline wrote."""
+
+    for candidate in POSITIONS_FILES:
+        rows = artifacts.read_jsonl(
+            results_key=results_key, filename=candidate, max_lines=MAX_POSITION_RECORDS
+        )
+        if rows:
+            return rows
+    return []
 
 
 class _FinishedJobLoader:
@@ -122,12 +223,15 @@ class GetGameStatsUseCase:
             )
 
         roster = self._roster_for(job, user_id=user_id)
+        track_to_stable, observations = _v2_identity_maps(self._artifacts, key, teams, numbers)
         stats = build_game_stats(
             shots_document=shots,
             teams_document=teams,
             numbers_document=numbers,
             roster=roster,
             our_team_side=job.our_team_side,
+            track_to_stable=track_to_stable,
+            observations_by_stable=observations,
         )
         return {
             "job_id": job.id,
@@ -164,7 +268,13 @@ class GetShotChartUseCase:
         self._roster = roster
 
     def execute(
-        self, *, user_id: str, team_id: str, job_id: str, track_id: int | None = None
+        self,
+        *,
+        user_id: str,
+        team_id: str,
+        job_id: str,
+        track_id: int | None = None,
+        stable_player_id: str | None = None,
     ) -> dict:
         job = self._loader.load(user_id=user_id, team_id=team_id, job_id=job_id)
         key = job.results_key
@@ -187,13 +297,17 @@ class GetShotChartUseCase:
             roster = roster_by_number(
                 self._roster.list_by_owner_and_team(owner_user_id=user_id, team_id=job.team_id)
             )
+        track_to_stable, observations = _v2_identity_maps(self._artifacts, key, teams, numbers)
         chart = build_shot_chart(
             shots_document=shots,
             teams_document=teams,
             numbers_document=numbers,
             track_id=track_id,
+            stable_player_id=stable_player_id,
             roster=roster,
             our_team_side=job.our_team_side,
+            track_to_stable=track_to_stable,
+            observations_by_stable=observations,
         )
         return {
             "job_id": job.id,
@@ -402,12 +516,13 @@ class GetCourtPositionsUseCase:
         numbers_document = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
         teams_of = team_by_track(teams_document)
         numbers_of = number_by_track(numbers_document)
+        numbers_stable = number_by_stable(numbers_document)
 
         sample_every = max(1, int(sample_every))
-        paths: dict[int, dict] = {}
-        movement: dict[int, dict] = {}
+        paths: dict = {}
+        movement: dict = {}
         discarded = 0
-        seen_per_track: dict[int, int] = {}
+        seen_per_player: dict = {}
 
         for row in rows:
             court_xy = row.get("court_xy_m")
@@ -424,15 +539,22 @@ class GetCourtPositionsUseCase:
                 continue
 
             track_id = int(track_id)
+            # v2 splits a player across many segmented track_ids but tags each row
+            # with a stable_player_id; group the path by that so one player is one
+            # path, not a dozen fragments. v1 rows have no stable id -> by track.
+            stable_id = row.get("stable_player_id")
+            pkey = str(stable_id) if stable_id is not None else track_id
+            jersey = numbers_stable.get(str(stable_id)) if stable_id is not None else numbers_of.get(track_id)
             point = (float(court_xy[0]), float(court_xy[1]))
             path = paths.setdefault(
-                track_id,
+                pkey,
                 {
                     "track_id": track_id,
+                    "stable_player_id": stable_id,
                     # player_positions rows carry the team directly; the stats
                     # pipeline's rows do not, so fall back to the assignments file.
                     "team_id": row.get("team_id", teams_of.get(track_id)),
-                    "jersey_number": numbers_of.get(track_id),
+                    "jersey_number": jersey,
                     "positions": [],
                 },
             )
@@ -441,7 +563,7 @@ class GetCourtPositionsUseCase:
             # distance summed from a downsampled path would understate how far a
             # player actually ran.
             summary = movement.setdefault(
-                track_id, {"samples": 0, "sum_x": 0.0, "sum_y": 0.0, "distance_m": 0.0, "prev": None}
+                pkey, {"samples": 0, "sum_x": 0.0, "sum_y": 0.0, "distance_m": 0.0, "prev": None}
             )
             if summary["prev"] is not None:
                 summary["distance_m"] += step_distance(summary["prev"], point)
@@ -450,8 +572,8 @@ class GetCourtPositionsUseCase:
             summary["sum_x"] += point[0]
             summary["sum_y"] += point[1]
 
-            index = seen_per_track.get(track_id, 0)
-            seen_per_track[track_id] = index + 1
+            index = seen_per_player.get(pkey, 0)
+            seen_per_player[pkey] = index + 1
             if index % sample_every:
                 continue
 
@@ -463,8 +585,8 @@ class GetCourtPositionsUseCase:
                 }
             )
 
-        for track_id, path in paths.items():
-            summary = movement[track_id]
+        for pkey, path in paths.items():
+            summary = movement[pkey]
             samples = summary["samples"]
             path["movement"] = {
                 "samples": samples,
@@ -479,7 +601,7 @@ class GetCourtPositionsUseCase:
             "job_id": job.id,
             "video_id": job.video_id,
             "court": {"length_m": COURT_LENGTH_M, "width_m": COURT_WIDTH_M},
-            "players": [paths[key_] for key_ in sorted(paths)],
+            "players": [paths[key_] for key_ in sorted(paths, key=str)],
             "coverage": {
                 "source_file": source_file,
                 "records_read": len(rows),

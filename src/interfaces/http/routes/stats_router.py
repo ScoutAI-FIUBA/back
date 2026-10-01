@@ -97,14 +97,18 @@ def create_stats_router(
         team_id: UUID,
         request: Request,
         track_id: int | None = Query(
-            None, description="Limit the chart to one tracked player. Omit for every shot.",
+            None, description="Limit to one v1 tracked player. Omit for every shot.",
+        ),
+        stable_player_id: str | None = Query(
+            None, description="Limit to one v2 player (stable id). Omit for every shot.",
         ),
     ):
         """Every located shot as a court marker, for drawing a shot chart.
 
         Each marker carries its court position and whether it went in (made vs
         missed), and the response includes the court geometry needed to draw the
-        floor and three-point line. Pass `track_id` for a single player's chart.
+        floor and three-point line. For one player's chart, pass `stable_player_id`
+        (v2) or `track_id` (v1).
         """
 
         try:
@@ -113,6 +117,7 @@ def create_stats_router(
                 team_id=str(team_id),
                 job_id=str(job_id),
                 track_id=track_id,
+                stable_player_id=stable_player_id,
             )
         except JobError as exc:
             return JSONResponse(status_code=job_error_http_status(exc.code), content=exc.to_envelope())
