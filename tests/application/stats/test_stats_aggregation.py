@@ -307,6 +307,44 @@ class TestRosterLinking(unittest.TestCase):
         self.assertEqual(chart["shots"][0]["roster_player_id"], "p-white")
 
 
+class TestV2Shapes(unittest.TestCase):
+    """The v2 (SAM 3.1) pipeline emits different shapes than v1; both must read."""
+
+    def test_team_by_track_reads_v2_assignments_by_track_id(self) -> None:
+        v2_teams = {"assignments_by_track_id": {"0": 1, "1": 0, "2": 1}}
+        self.assertEqual(team_by_track(v2_teams), {0: 1, 1: 0, 2: 1})
+
+    def test_team_by_track_still_reads_v1_list(self) -> None:
+        self.assertEqual(team_by_track(TEAMS), {9: 1, 5: 0, 3: 1})
+
+    def test_number_by_track_reads_v2_players_via_stable_map(self) -> None:
+        v2_numbers = {"players": [
+            {"stable_player_id": "player-001", "number": "7", "status": "confirmed"},
+            {"stable_player_id": "player-002", "number": "unknown", "status": "ambiguous"},
+        ]}
+        stable_to_track = {"player-001": 9, "player-002": 5}
+        self.assertEqual(number_by_track(v2_numbers, stable_to_track=stable_to_track), {9: "7"})
+
+    def test_v2_numbers_without_a_stable_map_are_skipped_not_guessed(self) -> None:
+        v2_numbers = {"players": [{"stable_player_id": "player-001", "number": "7", "status": "confirmed"}]}
+        self.assertEqual(number_by_track(v2_numbers), {})
+
+    def test_build_game_stats_with_v2_documents(self) -> None:
+        v2_teams = {"assignments_by_track_id": {"9": 1, "5": 0}}
+        v2_numbers = {"players": [{"stable_player_id": "p9", "number": "7", "status": "confirmed"}]}
+        stats = build_game_stats(
+            shots_document=shots(shot(shooter_track_id=9, shooter_team_id=1)),
+            teams_document=v2_teams,
+            numbers_document=v2_numbers,
+            stable_to_track={"p9": 9},
+        ).to_dict()
+        team = next(t for t in stats["teams"] if t["team_id"] == 1)
+        self.assertEqual(team["points"], 2)
+        shooter = next(p for p in stats["players"] if p["track_id"] == 9)
+        self.assertEqual(shooter["team_id"], 1)
+        self.assertEqual(shooter["jersey_number"], "7")
+
+
 class TestShotChart(unittest.TestCase):
     """The same shots as the box score, reshaped for drawing on a court."""
 

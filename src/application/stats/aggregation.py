@@ -20,29 +20,55 @@ MADE = "made"
 MISSED = "missed"
 
 
+def _coerce_track_id(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def team_by_track(teams_document: dict | None) -> dict[int, int]:
-    """`track_id -> team_id` from the pipeline's team assignments."""
+    """`track_id -> team_id` from the pipeline's team assignments.
+
+    Accepts both pipeline shapes: the v1 `assignments` list of
+    `{track_id, team_id}`, and the v2 `assignments_by_track_id` map of
+    `{"<track_id>": team_id}`.
+    """
 
     if not teams_document:
         return {}
     mapping: dict[int, int] = {}
     for assignment in teams_document.get("assignments") or []:
-        track_id = assignment.get("track_id")
+        track_id = _coerce_track_id(assignment.get("track_id"))
         team_id = assignment.get("team_id")
         if track_id is not None and team_id is not None:
-            mapping[int(track_id)] = int(team_id)
+            mapping[track_id] = int(team_id)
+    for raw_track_id, team_id in (teams_document.get("assignments_by_track_id") or {}).items():
+        track_id = _coerce_track_id(raw_track_id)
+        if track_id is not None and team_id is not None:
+            mapping[track_id] = int(team_id)
     return mapping
 
 
-def number_by_track(numbers_document: dict | None) -> dict[int, str]:
+def number_by_track(
+    numbers_document: dict | None,
+    *,
+    stable_to_track: dict[str, int] | None = None,
+) -> dict[int, str]:
     """`track_id -> jersey number`, confirmed readings only.
 
     Unconfirmed guesses are dropped rather than surfaced: a wrong number on a
     stat line is worse than no number, because it silently attributes a shot to
     the wrong player.
 
-    TODO(jersey-numbers): sparse today (~22 crops/game read). Fills out as CV
-    number sampling improves; no change needed here.
+    Two pipeline shapes are accepted. v1 lists `tracks` keyed by `track_id`. v2
+    lists `players` keyed by `stable_player_id`; those are mapped back to a
+    `track_id` via `stable_to_track` (built from the projected tracks, which
+    carry both ids). Without that map, v2 numbers cannot be attached and are
+    skipped rather than guessed at.
+
+    TODO(jersey-numbers): sparse today. Fills out as CV number sampling improves
+    (notably once the SAM window spans the whole clip); no change needed here.
     """
 
     if not numbers_document:
@@ -52,7 +78,14 @@ def number_by_track(numbers_document: dict | None) -> dict[int, str]:
         if track.get("status") != "confirmed":
             continue
         number = track.get("number")
-        track_id = track.get("track_id")
+        track_id = _coerce_track_id(track.get("track_id"))
+        if track_id is not None and number not in (None, "", "unknown"):
+            mapping[track_id] = str(number)
+    for player in numbers_document.get("players") or []:
+        if player.get("status") != "confirmed":
+            continue
+        number = player.get("number")
+        track_id = (stable_to_track or {}).get(player.get("stable_player_id"))
         if track_id is not None and number not in (None, "", "unknown"):
             mapping[int(track_id)] = str(number)
     return mapping
@@ -85,6 +118,7 @@ def build_game_stats(
     numbers_document: dict | None,
     roster: dict[str, dict] | None = None,
     our_team_side: int | None = None,
+    stable_to_track: dict[str, int] | None = None,
 ) -> GameStats:
     """Assemble the box score for one processed video.
 
@@ -95,7 +129,7 @@ def build_game_stats(
     """
 
     teams_of = team_by_track(teams_document)
-    numbers_of = number_by_track(numbers_document)
+    numbers_of = number_by_track(numbers_document, stable_to_track=stable_to_track)
 
     players: dict[int, PlayerStats] = {}
     teams: dict[int, TeamStats] = {}
@@ -237,6 +271,7 @@ def build_shot_chart(
     track_id: int | None = None,
     roster: dict[str, dict] | None = None,
     our_team_side: int | None = None,
+    stable_to_track: dict[str, int] | None = None,
 ) -> dict:
     """Every located shot as a court marker, grouped by the player who took it.
 
@@ -253,6 +288,7 @@ def build_shot_chart(
         numbers_document=numbers_document,
         roster=roster,
         our_team_side=our_team_side,
+        stable_to_track=stable_to_track,
     ).to_dict()
 
     display_of = {player["track_id"]: player["display_name"] for player in game["players"]}

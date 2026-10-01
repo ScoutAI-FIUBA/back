@@ -67,6 +67,49 @@ def roster_by_number(players: list) -> dict[str, dict]:
     return {number: value for number, value in mapping.items() if seen[number] == 1}
 
 
+def _numbers_need_stable_map(numbers_document: dict | None) -> bool:
+    """True only when numbers are the v2 shape with at least one confirmed read.
+
+    Lets the game-stats read skip the extra projected-tracks fetch for v1 output
+    and for v2 output that confirmed nothing (the common case today).
+    """
+
+    if not numbers_document:
+        return False
+    return any(
+        player.get("status") == "confirmed" and player.get("number") not in (None, "", "unknown")
+        for player in numbers_document.get("players") or []
+    )
+
+
+def stable_to_track_from_rows(rows: list[dict]) -> dict[str, int]:
+    """`stable_player_id -> track_id`, from projected-track rows that carry both."""
+
+    mapping: dict[str, int] = {}
+    for row in rows:
+        stable_id = row.get("stable_player_id")
+        track_id = row.get("track_id", row.get("player_id"))
+        if stable_id is None or track_id is None:
+            continue
+        try:
+            mapping[str(stable_id)] = int(track_id)
+        except (TypeError, ValueError):
+            continue
+    return mapping
+
+
+def read_position_rows(artifacts: "ArtifactReaderPort", results_key: str) -> list[dict]:
+    """Projected-track rows from whichever position file the pipeline wrote."""
+
+    for candidate in POSITIONS_FILES:
+        rows = artifacts.read_jsonl(
+            results_key=results_key, filename=candidate, max_lines=MAX_POSITION_RECORDS
+        )
+        if rows:
+            return rows
+    return []
+
+
 class _FinishedJobLoader:
     """Shared guard: the caller may see this job, and it has finished."""
 
@@ -128,6 +171,7 @@ class GetGameStatsUseCase:
             numbers_document=numbers,
             roster=roster,
             our_team_side=job.our_team_side,
+            stable_to_track=self._stable_to_track_for(numbers, key),
         )
         return {
             "job_id": job.id,
@@ -135,6 +179,17 @@ class GetGameStatsUseCase:
             "our_team_side": job.our_team_side,
             **stats.to_dict(),
         }
+
+    def _stable_to_track_for(self, numbers: dict | None, results_key: str) -> dict[str, int] | None:
+        # v2 keys jersey numbers by stable_player_id; only then (and only when a
+        # number actually confirmed) do we pay to read the projected tracks that
+        # bridge stable ids back to track ids.
+        if not _numbers_need_stable_map(numbers):
+            return None
+        try:
+            return stable_to_track_from_rows(read_position_rows(self._artifacts, results_key))
+        except ArtifactReadError:
+            return None
 
     def _roster_for(self, job, *, user_id: str) -> dict[str, dict] | None:
         if job.our_team_side is None:
@@ -187,6 +242,12 @@ class GetShotChartUseCase:
             roster = roster_by_number(
                 self._roster.list_by_owner_and_team(owner_user_id=user_id, team_id=job.team_id)
             )
+        stable_to_track = None
+        if _numbers_need_stable_map(numbers):
+            try:
+                stable_to_track = stable_to_track_from_rows(read_position_rows(self._artifacts, key))
+            except ArtifactReadError:
+                stable_to_track = None
         chart = build_shot_chart(
             shots_document=shots,
             teams_document=teams,
@@ -194,6 +255,7 @@ class GetShotChartUseCase:
             track_id=track_id,
             roster=roster,
             our_team_side=job.our_team_side,
+            stable_to_track=stable_to_track,
         )
         return {
             "job_id": job.id,
@@ -401,7 +463,10 @@ class GetCourtPositionsUseCase:
         teams_document = self._artifacts.read_json(results_key=key, filename=TEAMS_FILE)
         numbers_document = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
         teams_of = team_by_track(teams_document)
-        numbers_of = number_by_track(numbers_document)
+        # The rows are already in hand, so bridge v2's stable-id numbers for free.
+        numbers_of = number_by_track(
+            numbers_document, stable_to_track=stable_to_track_from_rows(rows)
+        )
 
         sample_every = max(1, int(sample_every))
         paths: dict[int, dict] = {}
