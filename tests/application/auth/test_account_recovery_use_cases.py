@@ -133,6 +133,9 @@ class _EmailTokens:
                 self.tokens[idx] = EmailToken(**{**token.__dict__, "used_at": used_at})
                 return
 
+    def delete(self, token_id: str) -> None:
+        self.tokens = [token for token in self.tokens if token.id != token_id]
+
     def count_recent(self, user_id: str, purpose: str, since: datetime) -> int:
         return sum(1 for token in self.tokens if token.user_id == user_id and token.purpose == purpose and token.created_at >= since)
 
@@ -266,6 +269,27 @@ class TestAccountRecoveryUseCases(unittest.TestCase):
         self.assertEqual(tokens.tokens[0].purpose, PASSWORD_RESET)
         self.assertEqual(len(mail.sent), 1)
         self.assertIn("restablecer-password?token=plain-1", mail.sent[0]["html"])
+
+    def test_forgot_password_drops_token_when_mail_fails(self) -> None:
+        class _FailingMail:
+            def send(self, *, to: str, subject: str, html: str) -> None:
+                raise AuthError(code="AUTH_INTERNAL", message="Failed to send email")
+
+        users = _UserRepo()
+        users.create(_user())
+        tokens = _EmailTokens()
+        use_case = RequestPasswordResetUseCase(
+            users=users,
+            email_tokens=tokens,
+            email_sender=_FailingMail(),
+            refresh_tokens=_RefreshTokens(),
+            clock=_Clock(),
+            ids=_Ids(),
+            uow=_Uow(),
+            app_public_url="http://localhost:5173",
+        )
+        use_case.execute(RequestPasswordResetCommand(email="user@example.com"))
+        self.assertEqual(tokens.tokens, [])
 
     def test_reset_password_updates_hash_and_revokes_sessions(self) -> None:
         users = _UserRepo()

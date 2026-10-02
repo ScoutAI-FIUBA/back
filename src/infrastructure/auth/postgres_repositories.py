@@ -419,6 +419,13 @@ class PostgresEmailTokenRepository:
                 {"id": token_id, "used_at": used_at},
             )
 
+    def delete(self, token_id: str) -> None:
+        with self._connection.cursor() as cur:
+            cur.execute(
+                "DELETE FROM auth_email_tokens WHERE id = %(id)s",
+                {"id": token_id},
+            )
+
     def count_recent(self, user_id: str, purpose: str, since: datetime) -> int:
         with self._connection.cursor() as cur:
             cur.execute(

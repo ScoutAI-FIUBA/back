@@ -47,7 +47,7 @@ ACCESS_TOKEN_TTL_SECONDS = 15 * 60
 REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
 PASSWORD_RESET_TTL_SECONDS = 60 * 60
 EMAIL_VERIFICATION_TTL_SECONDS = 24 * 60 * 60
-EMAIL_TOKEN_HOURLY_LIMIT = 3
+EMAIL_TOKEN_HOURLY_LIMIT = 10
 
 
 def _identity(user: User) -> AuthIdentity:
@@ -596,19 +596,19 @@ class RequestPasswordResetUseCase:
             return
         now = self._clock.now()
         if self._email_tokens.count_recent(user.id, PASSWORD_RESET, now - timedelta(hours=1)) >= EMAIL_TOKEN_HOURLY_LIMIT:
+            logger.info("Password reset throttled for user_id=%s", user.id)
             return
         plain = self._refresh_tokens.generate_plain()
+        token = EmailToken(
+            id=self._ids.new_id(),
+            user_id=user.id,
+            purpose=PASSWORD_RESET,
+            token_hash=self._refresh_tokens.hash(plain),
+            created_at=now,
+            expires_at=now + timedelta(seconds=PASSWORD_RESET_TTL_SECONDS),
+        )
         with self._uow.transaction():
-            self._email_tokens.create(
-                EmailToken(
-                    id=self._ids.new_id(),
-                    user_id=user.id,
-                    purpose=PASSWORD_RESET,
-                    token_hash=self._refresh_tokens.hash(plain),
-                    created_at=now,
-                    expires_at=now + timedelta(seconds=PASSWORD_RESET_TTL_SECONDS),
-                )
-            )
+            self._email_tokens.create(token)
         reset_url = f"{self._app_public_url}/restablecer-password?token={plain}"
         try:
             self._email_sender.send(
@@ -622,7 +622,8 @@ class RequestPasswordResetUseCase:
             )
         except AuthError:
             logger.exception("Password reset email was not sent")
-
+            with self._uow.transaction():
+                self._email_tokens.delete(token.id)
 
 class ResetPasswordUseCase:
     """Redeems a password-reset token and invalidates every refresh session."""
