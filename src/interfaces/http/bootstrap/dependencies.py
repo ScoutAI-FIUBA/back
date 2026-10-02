@@ -303,15 +303,35 @@ def build_processing_service() -> ProcessingServicePort:
     return HttpProcessingService(endpoint_url=url, auth_token=token)
 
 
+def _app_public_url() -> str:
+    """Front URL used inside password-reset and verification emails.
+
+    Prefer APP_PUBLIC_URL. In production deploys that forget it, fall back to
+    the first CORS origin so links do not silently point at localhost.
+    """
+
+    explicit = (os.getenv("APP_PUBLIC_URL") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    cors = (os.getenv("CORS_ORIGINS") or "").strip()
+    if cors:
+        first = cors.split(",")[0].strip().rstrip("/")
+        if first:
+            return first
+    return "http://localhost:5173"
+
+
 def _build_email_sender():
     # Render blocks outbound SMTP (25/465/587). HTTPS APIs work there.
     # Brevo: verify one sender email by clicking a link, then mail anyone.
     brevo_api_key = (os.getenv("BREVO_API_KEY") or "").strip()
     if brevo_api_key:
-        return BrevoEmailSender(
-            api_key=brevo_api_key,
-            from_address=(os.getenv("BREVO_FROM_ADDRESS") or os.getenv("SMTP_FROM_ADDRESS") or "").strip(),
-        )
+        from_address = (
+            os.getenv("BREVO_FROM_ADDRESS") or os.getenv("SMTP_FROM_ADDRESS") or ""
+        ).strip()
+        if not from_address:
+            return NoOpEmailSender()
+        return BrevoEmailSender(api_key=brevo_api_key, from_address=from_address)
     resend_api_key = (os.getenv("RESEND_API_KEY") or "").strip()
     if resend_api_key:
         return ResendEmailSender(
@@ -354,7 +374,7 @@ def build_http_dependencies(
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)
     email_tokens_repo = PostgresEmailTokenRepository(connection=conn)
     email_sender = _build_email_sender()
-    app_public_url = (os.getenv("APP_PUBLIC_URL") or "http://localhost:5173").strip()
+    app_public_url = _app_public_url()
     google_client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
     google_verifier = (
         GoogleIdTokenVerifier(client_id=google_client_id)
