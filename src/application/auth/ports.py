@@ -177,6 +177,10 @@ class EmailTokenRepositoryPort(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def delete(self, token_id: str) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
     def count_recent(self, user_id: str, purpose: str, since: datetime) -> int:
         raise NotImplementedError
 
