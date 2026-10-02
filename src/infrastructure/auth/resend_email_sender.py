@@ -16,7 +16,7 @@ class NoOpEmailSender(EmailSenderPort):
     """Used when no mail provider is configured. Forgot-password still succeeds."""
 
     def send(self, *, to: str, subject: str, html: str) -> None:
-        logger.info("Email skipped: neither SMTP nor RESEND_API_KEY is configured")
+        logger.info("Email skipped: no mail provider is configured")
 
 
 class ResendEmailSender(EmailSenderPort):
