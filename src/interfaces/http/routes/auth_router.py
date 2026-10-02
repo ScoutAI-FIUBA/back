@@ -284,9 +284,9 @@ def create_auth_router(
         def forgot_password(payload: ForgotPasswordRequest):
             try:
                 request_password_reset_use_case.execute(RequestPasswordResetCommand(email=payload.email))
-                return Response(status_code=HTTPStatus.ACCEPTED)
-            except AuthError as exc:
-                return JSONResponse(status_code=auth_error_http_status(exc.code), content=exc.to_envelope())
+            except AuthError:
+                pass
+            return Response(status_code=HTTPStatus.ACCEPTED)
 
     if reset_password_use_case is not None:
 

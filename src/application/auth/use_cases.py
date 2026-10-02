@@ -8,6 +8,7 @@ concerns outside the application layer.
 
 from dataclasses import dataclass
 from datetime import timedelta
+import logging
 
 from src.application.auth.errors import (
     AUTH_REFRESH_REUSED,
@@ -39,6 +40,8 @@ from src.domain.auth.entities import (
     User,
 )
 from src.domain.auth.value_objects import AuthIdentity, Email, PlainPassword, TokenPair
+
+logger = logging.getLogger(__name__)
 
 ACCESS_TOKEN_TTL_SECONDS = 15 * 60
 REFRESH_TOKEN_TTL_SECONDS = 7 * 24 * 60 * 60
@@ -607,15 +610,18 @@ class RequestPasswordResetUseCase:
                 )
             )
         reset_url = f"{self._app_public_url}/restablecer-password?token={plain}"
-        self._email_sender.send(
-            to=user.email_normalized,
-            subject="Restablecé tu contraseña de ScoutAI",
-            html=(
-                "<p>Recibimos un pedido para restablecer tu contraseña.</p>"
-                f'<p><a href="{reset_url}">Elegí una contraseña nueva</a></p>'
-                "<p>El enlace vence en una hora. Si no fuiste vos, ignorá este mail.</p>"
-            ),
-        )
+        try:
+            self._email_sender.send(
+                to=user.email_normalized,
+                subject="Restablecé tu contraseña de ScoutAI",
+                html=(
+                    "<p>Recibimos un pedido para restablecer tu contraseña.</p>"
+                    f'<p><a href="{reset_url}">Elegí una contraseña nueva</a></p>'
+                    "<p>El enlace vence en una hora. Si no fuiste vos, ignorá este mail.</p>"
+                ),
+            )
+        except AuthError:
+            logger.exception("Password reset email was not sent")
 
 
 class ResetPasswordUseCase:

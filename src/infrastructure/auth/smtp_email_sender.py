@@ -40,6 +40,6 @@ class SmtpEmailSender(EmailSenderPort):
                 smtp.starttls()
                 smtp.login(self._username, self._password)
                 smtp.send_message(message)
-        except smtplib.SMTPException as exc:
+        except (OSError, TimeoutError, smtplib.SMTPException) as exc:
             logger.exception("SMTP send failed")
             raise AuthError(code=AUTH_INTERNAL, message="Failed to send email") from exc

@@ -105,6 +105,7 @@ from src.infrastructure.auth.postgres_repositories import (
     PostgresRefreshSessionRepository,
     PostgresUserRepository,
 )
+from src.infrastructure.auth.brevo_email_sender import BrevoEmailSender
 from src.infrastructure.auth.resend_email_sender import NoOpEmailSender, ResendEmailSender
 from src.infrastructure.auth.smtp_email_sender import SmtpEmailSender
 from src.infrastructure.clip_collections.ffmpeg_clip_exporter import FFmpegClipExporter
@@ -303,6 +304,20 @@ def build_processing_service() -> ProcessingServicePort:
 
 
 def _build_email_sender():
+    # Render blocks outbound SMTP (25/465/587). HTTPS APIs work there.
+    # Brevo: verify one sender email by clicking a link, then mail anyone.
+    brevo_api_key = (os.getenv("BREVO_API_KEY") or "").strip()
+    if brevo_api_key:
+        return BrevoEmailSender(
+            api_key=brevo_api_key,
+            from_address=(os.getenv("BREVO_FROM_ADDRESS") or os.getenv("SMTP_FROM_ADDRESS") or "").strip(),
+        )
+    resend_api_key = (os.getenv("RESEND_API_KEY") or "").strip()
+    if resend_api_key:
+        return ResendEmailSender(
+            api_key=resend_api_key,
+            from_address=(os.getenv("RESEND_FROM_ADDRESS") or "ScoutAI <noreply@localhost>").strip(),
+        )
     smtp_username = (os.getenv("SMTP_USERNAME") or "").strip()
     smtp_password = (os.getenv("SMTP_PASSWORD") or "").strip()
     if smtp_username and smtp_password:
@@ -312,12 +327,6 @@ def _build_email_sender():
             username=smtp_username,
             password=smtp_password,
             from_address=(os.getenv("SMTP_FROM_ADDRESS") or smtp_username).strip(),
-        )
-    resend_api_key = (os.getenv("RESEND_API_KEY") or "").strip()
-    if resend_api_key:
-        return ResendEmailSender(
-            api_key=resend_api_key,
-            from_address=(os.getenv("RESEND_FROM_ADDRESS") or "ScoutAI <noreply@localhost>").strip(),
         )
     return NoOpEmailSender()
 
