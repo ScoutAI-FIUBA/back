@@ -16,14 +16,19 @@ class GoogleIdTokenVerifier(GoogleIdTokenVerifierPort):
         self._client_id = client_id
 
     def verify(self, id_token: str) -> GoogleIdentity:
-        from google.auth.transport.requests import Request
-        from google.oauth2 import id_token as google_id_token
-        from google.auth.exceptions import GoogleAuthError
+        try:
+            from google.auth.transport.requests import Request
+            from google.oauth2 import id_token as google_id_token
+            from google.auth.exceptions import GoogleAuthError
+        except ImportError as exc:
+            raise AuthError(code="AUTH_INTERNAL", message="Google login is unavailable") from exc
 
         try:
             claims = google_id_token.verify_oauth2_token(id_token, Request(), self._client_id)
         except (GoogleAuthError, ValueError) as exc:
             raise AuthError(code=AUTH_TOKEN_INVALID, message="Google token is invalid") from exc
+        except Exception as exc:
+            raise AuthError(code="AUTH_INTERNAL", message="Google login failed") from exc
 
         email = str(claims.get("email") or "").strip()
         subject = str(claims.get("sub") or "").strip()

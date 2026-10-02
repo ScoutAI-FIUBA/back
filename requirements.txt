@@ -7,3 +7,4 @@ python-multipart==0.0.12
 pytest==8.3.5
 httpx==0.28.1
 google-auth==2.41.1
+requests==2.32.5
