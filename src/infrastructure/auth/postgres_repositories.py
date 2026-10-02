@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from psycopg.rows import dict_row
 
-from src.domain.auth.entities import RefreshSession, User
+from src.domain.auth.entities import EmailToken, RefreshSession, User
 
 
 class CursorLike(Protocol):
@@ -41,6 +41,7 @@ def _row_to_user(row: dict[str, Any] | None) -> User | None:
         email_verified=row["email_verified"],
         role=row["role"],
         auth_provider_id=row.get("auth_provider_id"),
+        full_name=row.get("full_name"),
         created_at=row.get("created_at"),
         updated_at=row.get("updated_at"),
         deleted_at=row.get("deleted_at"),
@@ -84,10 +85,10 @@ class PostgresUserRepository:
                 """
                 INSERT INTO users (
                     id, email_normalized, password_hash, email_verified,
-                    role, auth_provider_id, created_at, updated_at, deleted_at
+                    role, auth_provider_id, full_name, created_at, updated_at, deleted_at
                 ) VALUES (
                     %(id)s, %(email_normalized)s, %(password_hash)s, %(email_verified)s,
-                    %(role)s, %(auth_provider_id)s, %(created_at)s, %(updated_at)s, %(deleted_at)s
+                    %(role)s, %(auth_provider_id)s, %(full_name)s, %(created_at)s, %(updated_at)s, %(deleted_at)s
                 )
                 RETURNING *
                 """,
@@ -138,6 +139,58 @@ class PostgresUserRepository:
         with self._connection.cursor() as cur:
             cur.execute("DELETE FROM users WHERE id = %(id)s", {"id": user_id})
             return cur.rowcount > 0
+
+    def update_password_hash(self, user_id: str, password_hash: str, updated_at: datetime) -> User | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET password_hash = %(password_hash)s, updated_at = %(updated_at)s
+                WHERE id = %(id)s AND deleted_at IS NULL
+                RETURNING *
+                """,
+                {"id": user_id, "password_hash": password_hash, "updated_at": updated_at},
+            )
+            return _row_to_user(cur.fetchone())
+
+    def update_profile(self, user_id: str, full_name: str | None, updated_at: datetime) -> User | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET full_name = %(full_name)s, updated_at = %(updated_at)s
+                WHERE id = %(id)s AND deleted_at IS NULL
+                RETURNING *
+                """,
+                {"id": user_id, "full_name": full_name, "updated_at": updated_at},
+            )
+            return _row_to_user(cur.fetchone())
+
+    def mark_email_verified(self, user_id: str, updated_at: datetime) -> User | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET email_verified = TRUE, updated_at = %(updated_at)s
+                WHERE id = %(id)s AND deleted_at IS NULL
+                RETURNING *
+                """,
+                {"id": user_id, "updated_at": updated_at},
+            )
+            return _row_to_user(cur.fetchone())
+
+    def set_auth_provider(self, user_id: str, auth_provider_id: str, updated_at: datetime) -> User | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE users
+                SET auth_provider_id = %(auth_provider_id)s, updated_at = %(updated_at)s
+                WHERE id = %(id)s AND deleted_at IS NULL
+                RETURNING *
+                """,
+                {"id": user_id, "auth_provider_id": auth_provider_id, "updated_at": updated_at},
+            )
+            return _row_to_user(cur.fetchone())
 
 
 class PostgresRefreshSessionRepository:
@@ -302,3 +355,82 @@ class PostgresRefreshSessionRepository:
                 {"user_id": user_id, "revoked_at": revoked_at},
             )
             return cur.rowcount
+
+
+def _row_to_email_token(row: dict[str, Any] | None) -> EmailToken | None:
+    if row is None:
+        return None
+    return EmailToken(
+        id=row["id"],
+        user_id=row["user_id"],
+        purpose=row["purpose"],
+        token_hash=row["token_hash"],
+        created_at=row["created_at"],
+        expires_at=row["expires_at"],
+        used_at=row.get("used_at"),
+    )
+
+
+class PostgresEmailTokenRepository:
+    """Persistence adapter for one-time email tokens."""
+
+    def __init__(self, *, connection: ConnectionLike) -> None:
+        self._connection = connection
+
+    def create(self, token: EmailToken) -> EmailToken:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                INSERT INTO auth_email_tokens (
+                    id, user_id, purpose, token_hash, created_at, expires_at, used_at
+                ) VALUES (
+                    %(id)s, %(user_id)s, %(purpose)s, %(token_hash)s,
+                    %(created_at)s, %(expires_at)s, %(used_at)s
+                )
+                RETURNING *
+                """,
+                asdict(token),
+            )
+            row = cur.fetchone()
+        return _row_to_email_token(row) or token
+
+    def get_usable_by_hash(self, token_hash: str, purpose: str, now: datetime) -> EmailToken | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT * FROM auth_email_tokens
+                WHERE token_hash = %(token_hash)s
+                  AND purpose = %(purpose)s
+                  AND used_at IS NULL
+                  AND expires_at > %(now)s
+                """,
+                {"token_hash": token_hash, "purpose": purpose, "now": now},
+            )
+            return _row_to_email_token(cur.fetchone())
+
+    def mark_used(self, token_id: str, used_at: datetime) -> None:
+        with self._connection.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE auth_email_tokens
+                SET used_at = %(used_at)s
+                WHERE id = %(id)s AND used_at IS NULL
+                """,
+                {"id": token_id, "used_at": used_at},
+            )
+
+    def count_recent(self, user_id: str, purpose: str, since: datetime) -> int:
+        with self._connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) FROM auth_email_tokens
+                WHERE user_id = %(user_id)s
+                  AND purpose = %(purpose)s
+                  AND created_at >= %(since)s
+                """,
+                {"user_id": user_id, "purpose": purpose, "since": since},
+            )
+            row = cur.fetchone()
+        if row is None:
+            return 0
+        return int(row[0] if not isinstance(row, dict) else next(iter(row.values())))

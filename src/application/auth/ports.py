@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from datetime import datetime
 
 from src.application.common.ports import IdGeneratorPort, UnitOfWorkPort
-from src.domain.auth.entities import RefreshSession, User
+from src.domain.auth.entities import EmailToken, RefreshSession, User
 from src.domain.auth.value_objects import AuthIdentity
 
 
@@ -34,6 +35,22 @@ class UserRepositoryPort(ABC):
 
     @abstractmethod
     def hard_delete(self, user_id: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_password_hash(self, user_id: str, password_hash: str, updated_at: datetime) -> User | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_profile(self, user_id: str, full_name: str | None, updated_at: datetime) -> User | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def mark_email_verified(self, user_id: str, updated_at: datetime) -> User | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_auth_provider(self, user_id: str, auth_provider_id: str, updated_at: datetime) -> User | None:
         raise NotImplementedError
 
 
@@ -141,4 +158,50 @@ class AuthIdGeneratorPort(IdGeneratorPort, ABC):
 
     @abstractmethod
     def new_family_id(self) -> str:
+        raise NotImplementedError
+
+
+class EmailTokenRepositoryPort(ABC):
+    """Persistence contract for one-time tokens delivered by email."""
+
+    @abstractmethod
+    def create(self, token: EmailToken) -> EmailToken:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_usable_by_hash(self, token_hash: str, purpose: str, now: datetime) -> EmailToken | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def mark_used(self, token_id: str, used_at: datetime) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def count_recent(self, user_id: str, purpose: str, since: datetime) -> int:
+        raise NotImplementedError
+
+
+class EmailSenderPort(ABC):
+    """Outbound email boundary. Implementations must not log the recipient body."""
+
+    @abstractmethod
+    def send(self, *, to: str, subject: str, html: str) -> None:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class GoogleIdentity:
+    """Verified claims extracted from a Google ID token."""
+
+    subject: str
+    email: str
+    email_verified: bool
+    full_name: str | None = None
+
+
+class GoogleIdTokenVerifierPort(ABC):
+    """Validates a Google ID token and returns its identity claims."""
+
+    @abstractmethod
+    def verify(self, id_token: str) -> GoogleIdentity:
         raise NotImplementedError

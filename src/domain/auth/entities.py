@@ -26,9 +26,45 @@ class User:
     email_verified: bool = False
     role: str = "user"
     auth_provider_id: str | None = None
+    full_name: str | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
     deleted_at: datetime | None = None
+
+
+PASSWORD_RESET = "password_reset"
+EMAIL_VERIFICATION = "email_verification"
+
+
+@dataclass(frozen=True)
+class EmailToken:
+    """Represents a single-use token sent to a user's inbox.
+
+    Invariants expected by callers:
+    - `token_hash` is a digest; the plain token exists only inside the email.
+    - `purpose` is one of `PASSWORD_RESET` or `EMAIL_VERIFICATION`.
+    - consuming the token records `used_at`, which makes it unusable again.
+    """
+
+    id: str
+    user_id: str
+    purpose: str
+    token_hash: str
+    created_at: datetime
+    expires_at: datetime
+    used_at: datetime | None = None
+
+    def is_expired(self, now: datetime) -> bool:
+        """Return whether the token can no longer be redeemed by time."""
+        return now >= self.expires_at
+
+    def is_used(self) -> bool:
+        """Return whether the token was already redeemed."""
+        return self.used_at is not None
+
+    def is_usable(self, now: datetime) -> bool:
+        """Return whether the token may still be redeemed."""
+        return not self.is_used() and not self.is_expired(now)
 
 
 @dataclass(frozen=True)

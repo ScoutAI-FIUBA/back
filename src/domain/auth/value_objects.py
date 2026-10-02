@@ -75,3 +75,4 @@ class AuthIdentity:
     email: str
     role: str
     email_verified: bool
+    full_name: str | None = None
