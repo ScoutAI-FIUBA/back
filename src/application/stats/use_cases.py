@@ -349,20 +349,19 @@ class GetTeamSidesUseCase:
             raise JobError(code=RESULTS_NOT_AVAILABLE, message=str(exc)) from exc
 
         teams_of = team_by_track(teams)
-        numbers_of = number_by_track(numbers)
         roster_numbers = set(
             roster_by_number(
                 self._roster.list_by_owner_and_team(owner_user_id=user_id, team_id=job.team_id)
             )
         )
 
-        sides: dict[int, dict] = {}
-        for track_id, side in teams_of.items():
-            entry = sides.setdefault(side, {"team_side": side, "track_count": 0, "numbers": []})
-            entry["track_count"] += 1
-            number = numbers_of.get(track_id)
-            if number is not None:
-                entry["numbers"].append(number)
+        # v2 reads jersey numbers against stable_player_id, not track_id, so a
+        # side's numbers have to be gathered per player or they come back empty
+        # even when every number is known. v1 keeps the track-level grouping.
+        if _is_v2_output(teams, numbers):
+            sides = self._sides_by_stable_player(key, teams_of, numbers)
+        else:
+            sides = self._sides_by_track(teams_of, numbers)
 
         for entry in sides.values():
             entry["numbers"] = sorted(set(entry["numbers"]))
@@ -386,6 +385,60 @@ class GetTeamSidesUseCase:
             "sides": ordered,
             "roster_numbers_known": len(roster_numbers),
         }
+
+    def _sides_by_track(self, teams_of: dict[int, int], numbers: dict | None) -> dict[int, dict]:
+        """v1 grouping: one track is one player, so count and read by track."""
+
+        numbers_of = number_by_track(numbers)
+        sides: dict[int, dict] = {}
+        for track_id, side in teams_of.items():
+            entry = sides.setdefault(side, {"team_side": side, "track_count": 0, "numbers": []})
+            entry["track_count"] += 1
+            number = numbers_of.get(track_id)
+            if number is not None:
+                entry["numbers"].append(number)
+        return sides
+
+    def _sides_by_stable_player(
+        self, results_key: str, teams_of: dict[int, int], numbers: dict | None
+    ) -> dict[int, dict]:
+        """v2 grouping: collapse the many segmented tracks into stable players.
+
+        Numbers live on stable_player_id, and each player appears as many
+        segmented track_ids. Bridge the two through the projected tracks: assign
+        each player to the side its tracks mostly fall on, then read its number.
+        Without that bridge we fall back to track grouping so a side still shows.
+        """
+
+        try:
+            rows = read_position_rows(self._artifacts, results_key)
+        except ArtifactReadError:
+            rows = []
+        track_to_stable = track_to_stable_from_rows(rows)
+        if not track_to_stable:
+            return self._sides_by_track(teams_of, numbers)
+
+        numbers_of_stable = number_by_stable(numbers)
+        # One player's tracks can be split across sides by a mislabel; the side
+        # most of its tracks fall on wins.
+        side_votes: dict[str, dict[int, int]] = {}
+        for track_id, side in teams_of.items():
+            stable = track_to_stable.get(track_id)
+            if stable is None:
+                continue
+            votes = side_votes.setdefault(stable, {})
+            votes[side] = votes.get(side, 0) + 1
+
+        sides: dict[int, dict] = {}
+        for stable, votes in side_votes.items():
+            side = max(votes, key=votes.get)
+            entry = sides.setdefault(side, {"team_side": side, "track_count": 0, "numbers": []})
+            # Distinct players, not segments, so the count reads like a lineup.
+            entry["track_count"] += 1
+            number = numbers_of_stable.get(stable)
+            if number is not None:
+                entry["numbers"].append(number)
+        return sides
 
 
 class GetSimilarClipsUseCase:
