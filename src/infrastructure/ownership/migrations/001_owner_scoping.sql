@@ -1,17 +1,15 @@
--- Scopes teams and players to their owner. One-time reset: existing rows have no
--- owner, so this drops them and everything tied to them. Idempotent.
+-- Scopes teams and players to their owner. Idempotent.
+--
+-- The owner-less rows this originally had to clear are long gone, so the
+-- DELETE statements that did it have been removed: they only ever had data to
+-- destroy, and the migration runner used to replay this file on every deploy.
+-- A database still holding owner-less rows will now fail loudly on the
+-- SET NOT NULL below, which is the better outcome.
 
 ALTER TABLE teams
     ADD COLUMN IF NOT EXISTS owner_user_id TEXT REFERENCES users(id) ON DELETE CASCADE;
 ALTER TABLE players
     ADD COLUMN IF NOT EXISTS owner_user_id TEXT REFERENCES users(id) ON DELETE CASCADE;
-
-DELETE FROM processing_jobs
-    WHERE team_id IN (SELECT id FROM teams WHERE owner_user_id IS NULL);
-DELETE FROM videos
-    WHERE team_id IN (SELECT id FROM teams WHERE owner_user_id IS NULL);
-DELETE FROM players WHERE owner_user_id IS NULL;
-DELETE FROM teams WHERE owner_user_id IS NULL;
 
 ALTER TABLE teams ALTER COLUMN owner_user_id SET NOT NULL;
 ALTER TABLE players ALTER COLUMN owner_user_id SET NOT NULL;

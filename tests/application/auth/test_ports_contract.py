@@ -16,6 +16,9 @@ class TestPortsContract(unittest.TestCase):
             "ClockPort",
             "IdGeneratorPort",
             "UnitOfWorkPort",
+            "EmailTokenRepositoryPort",
+            "EmailSenderPort",
+            "GoogleIdTokenVerifierPort",
         }
         present = {name for name in dir(ports) if name.endswith("Port")}
         self.assertTrue(expected.issubset(present))

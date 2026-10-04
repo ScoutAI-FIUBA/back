@@ -29,6 +29,13 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             current_user_use_case=deps.get_current_user_use_case,
             delete_current_user_use_case=deps.delete_current_user_use_case,
             access_token_resolver=deps.access_token_resolver.resolve_subject,
+            request_password_reset_use_case=deps.request_password_reset_use_case,
+            reset_password_use_case=deps.reset_password_use_case,
+            change_password_use_case=deps.change_password_use_case,
+            update_profile_use_case=deps.update_profile_use_case,
+            send_email_verification_use_case=deps.send_email_verification_use_case,
+            confirm_email_verification_use_case=deps.confirm_email_verification_use_case,
+            google_login_use_case=deps.google_login_use_case,
         )
     )
     app.include_router(

@@ -6,4 +6,7 @@ __pycache__/
 .atl/
 
 .env
+.env.*
+!.env.example
+*.env
 .obsidian/

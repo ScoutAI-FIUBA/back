@@ -17,13 +17,20 @@ import psycopg
 
 from src.application.auth.ports import AuthIdGeneratorPort, ClockPort, UnitOfWorkPort
 from src.application.auth.use_cases import (
+    ChangePasswordUseCase,
+    ConfirmEmailVerificationUseCase,
     DeleteCurrentUserUseCase,
     GetCurrentUserUseCase,
+    GoogleLoginUseCase,
     HardDeleteUserUseCase,
     LoginUseCase,
     LogoutUseCase,
     RefreshSessionUseCase,
     RegisterUserUseCase,
+    RequestPasswordResetUseCase,
+    ResetPasswordUseCase,
+    SendEmailVerificationUseCase,
+    UpdateProfileUseCase,
 )
 from src.application.clip_collections.use_cases import (
     AddClipBatchUseCase,
@@ -86,13 +93,21 @@ from src.application.video.use_cases import (
     UpdateVideoUseCase,
 )
 from src.infrastructure.auth.argon2_password_hasher import Argon2PasswordHasher
+from src.infrastructure.auth.google_id_token_verifier import (
+    GoogleIdTokenVerifier,
+    UnconfiguredGoogleIdTokenVerifier,
+)
 from src.infrastructure.auth.jwt_access_token_resolver import JWTAccessTokenResolver
 from src.infrastructure.auth.jwt_token_issuer import JWTTokenIssuer
 from src.infrastructure.auth.opaque_refresh_token_service import OpaqueRefreshTokenService
 from src.infrastructure.auth.postgres_repositories import (
+    PostgresEmailTokenRepository,
     PostgresRefreshSessionRepository,
     PostgresUserRepository,
 )
+from src.infrastructure.auth.brevo_email_sender import BrevoEmailSender
+from src.infrastructure.auth.resend_email_sender import NoOpEmailSender, ResendEmailSender
+from src.infrastructure.auth.smtp_email_sender import SmtpEmailSender
 from src.infrastructure.clip_collections.ffmpeg_clip_exporter import FFmpegClipExporter
 from src.infrastructure.clip_collections.postgres_repository import PostgresClipCollectionRepository
 from src.infrastructure.jobs.http_processing_service import (
@@ -218,6 +233,13 @@ class HttpDependencies:
     get_current_user_use_case: GetCurrentUserUseCase
     delete_current_user_use_case: DeleteCurrentUserUseCase
     hard_delete_user_use_case: HardDeleteUserUseCase
+    request_password_reset_use_case: RequestPasswordResetUseCase
+    reset_password_use_case: ResetPasswordUseCase
+    change_password_use_case: ChangePasswordUseCase
+    update_profile_use_case: UpdateProfileUseCase
+    send_email_verification_use_case: SendEmailVerificationUseCase
+    confirm_email_verification_use_case: ConfirmEmailVerificationUseCase
+    google_login_use_case: GoogleLoginUseCase
     create_team_use_case: CreateTeamUseCase
     list_teams_use_case: ListTeamsUseCase
     update_team_use_case: UpdateTeamUseCase
@@ -281,6 +303,54 @@ def build_processing_service() -> ProcessingServicePort:
     return HttpProcessingService(endpoint_url=url, auth_token=token)
 
 
+def _app_public_url() -> str:
+    """Front URL used inside password-reset and verification emails.
+
+    Prefer APP_PUBLIC_URL. In production deploys that forget it, fall back to
+    the first CORS origin so links do not silently point at localhost.
+    """
+
+    explicit = (os.getenv("APP_PUBLIC_URL") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+    cors = (os.getenv("CORS_ORIGINS") or "").strip()
+    if cors:
+        first = cors.split(",")[0].strip().rstrip("/")
+        if first:
+            return first
+    return "http://localhost:5173"
+
+
+def _build_email_sender():
+    # Render blocks outbound SMTP (25/465/587). HTTPS APIs work there.
+    # Brevo: verify one sender email by clicking a link, then mail anyone.
+    brevo_api_key = (os.getenv("BREVO_API_KEY") or "").strip()
+    if brevo_api_key:
+        from_address = (
+            os.getenv("BREVO_FROM_ADDRESS") or os.getenv("SMTP_FROM_ADDRESS") or ""
+        ).strip()
+        if not from_address:
+            return NoOpEmailSender()
+        return BrevoEmailSender(api_key=brevo_api_key, from_address=from_address)
+    resend_api_key = (os.getenv("RESEND_API_KEY") or "").strip()
+    if resend_api_key:
+        return ResendEmailSender(
+            api_key=resend_api_key,
+            from_address=(os.getenv("RESEND_FROM_ADDRESS") or "ScoutAI <noreply@localhost>").strip(),
+        )
+    smtp_username = (os.getenv("SMTP_USERNAME") or "").strip()
+    smtp_password = (os.getenv("SMTP_PASSWORD") or "").strip()
+    if smtp_username and smtp_password:
+        return SmtpEmailSender(
+            host=(os.getenv("SMTP_HOST") or "smtp.gmail.com").strip(),
+            port=int((os.getenv("SMTP_PORT") or "587").strip()),
+            username=smtp_username,
+            password=smtp_password,
+            from_address=(os.getenv("SMTP_FROM_ADDRESS") or smtp_username).strip(),
+        )
+    return NoOpEmailSender()
+
+
 def build_http_dependencies(
     *,
     jwt_secret: str,
@@ -302,6 +372,15 @@ def build_http_dependencies(
     conn = OperationConnection(database_url)
     users_repo = PostgresUserRepository(connection=conn)
     refresh_repo = PostgresRefreshSessionRepository(connection=conn)
+    email_tokens_repo = PostgresEmailTokenRepository(connection=conn)
+    email_sender = _build_email_sender()
+    app_public_url = _app_public_url()
+    google_client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+    google_verifier = (
+        GoogleIdTokenVerifier(client_id=google_client_id)
+        if google_client_id
+        else UnconfiguredGoogleIdTokenVerifier()
+    )
     players_repo = PostgresPlayerRepository(connection=conn)
     matches_repo = PostgresMatchRepository(connection=conn)
     teams_repo = PostgresTeamRepository(connection=conn)
@@ -385,6 +464,61 @@ def build_http_dependencies(
             users=users_repo,
             refresh_sessions=refresh_repo,
             clock=clock,
+            uow=uow,
+        ),
+        request_password_reset_use_case=RequestPasswordResetUseCase(
+            users=users_repo,
+            email_tokens=email_tokens_repo,
+            email_sender=email_sender,
+            refresh_tokens=refresh_tokens,
+            clock=clock,
+            ids=ids,
+            uow=uow,
+            app_public_url=app_public_url,
+        ),
+        reset_password_use_case=ResetPasswordUseCase(
+            users=users_repo,
+            email_tokens=email_tokens_repo,
+            refresh_sessions=refresh_repo,
+            password_hasher=password_hasher,
+            refresh_tokens=refresh_tokens,
+            clock=clock,
+            uow=uow,
+        ),
+        change_password_use_case=ChangePasswordUseCase(
+            users=users_repo,
+            refresh_sessions=refresh_repo,
+            password_hasher=password_hasher,
+            clock=clock,
+            uow=uow,
+        ),
+        update_profile_use_case=UpdateProfileUseCase(users=users_repo, clock=clock, uow=uow),
+        send_email_verification_use_case=SendEmailVerificationUseCase(
+            users=users_repo,
+            email_tokens=email_tokens_repo,
+            email_sender=email_sender,
+            refresh_tokens=refresh_tokens,
+            clock=clock,
+            ids=ids,
+            uow=uow,
+            app_public_url=app_public_url,
+        ),
+        confirm_email_verification_use_case=ConfirmEmailVerificationUseCase(
+            users=users_repo,
+            email_tokens=email_tokens_repo,
+            refresh_tokens=refresh_tokens,
+            clock=clock,
+            uow=uow,
+        ),
+        google_login_use_case=GoogleLoginUseCase(
+            users=users_repo,
+            refresh_sessions=refresh_repo,
+            password_hasher=password_hasher,
+            token_issuer=token_issuer,
+            refresh_tokens=refresh_tokens,
+            verifier=google_verifier,
+            clock=clock,
+            ids=ids,
             uow=uow,
         ),
         create_team_use_case=CreateTeamUseCase(teams=teams_repo, clock=clock, ids=ids),

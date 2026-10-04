@@ -1,3 +1,7 @@
+-- Converges the pre-virtual-clip schema: those tables stored one row per
+-- exported file, so there is no in-place upgrade to the start_ms/end_ms shape.
+-- Guarded on the old columns, so it is inert on a current database, and the
+-- migration runner records this file once rather than replaying it per deploy.
 DO $$
 BEGIN
     IF EXISTS (
