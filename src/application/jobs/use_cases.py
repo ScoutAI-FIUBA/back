@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from src.application.jobs.errors import (
     INVALID_JOB_STATUS,
@@ -31,6 +32,21 @@ from src.domain.jobs.entities import JobStatus, ProcessingJob
 # Where a job's outputs are written, mirroring the `videos/{team_id}/{id}`
 # convention already used for uploads.
 RESULTS_KEY_TEMPLATE = "results/{team_id}/{job_id}"
+
+# A worker can die (Modal timeout, crash) without sending a terminal callback,
+# leaving a job RUNNING forever and blocking its video. An active job older than
+# this — comfortably past the processing service's own timeout — is treated as
+# dead so a new submission can proceed.
+STALE_ACTIVE_JOB_AFTER = timedelta(minutes=45)
+
+
+def _is_stale_active_job(job: ProcessingJob) -> bool:
+    reference = job.updated_at or job.created_at
+    if reference is None:
+        return False
+    if reference.tzinfo is None:
+        reference = reference.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - reference > STALE_ACTIVE_JOB_AFTER
 
 
 @dataclass(frozen=True)
@@ -83,6 +99,21 @@ class SubmitProcessingJobUseCase:
             raise JobError(code=VIDEO_NOT_FOUND, message="Video not found.")
 
         _, storage_key = video
+
+        # Submitting is idempotent per video: if a live job is already processing
+        # this video, hand it back so the client just navigates to its screen —
+        # never an error. A dead job (worker died without a terminal callback) is
+        # retired first so it cannot block the video forever.
+        active = self._jobs.find_active_for_video(video_id=command.video_id)
+        if active is not None:
+            if _is_stale_active_job(active):
+                self._jobs.mark_failed(
+                    job_id=active.id,
+                    error_message="Job exceeded the maximum runtime without reporting; marked stale.",
+                )
+            else:
+                return active
+
         job_id = self._ids.new_id()
         results_key = RESULTS_KEY_TEMPLATE.format(team_id=command.team_id, job_id=job_id)
 
@@ -102,6 +133,12 @@ class SubmitProcessingJobUseCase:
                     results_key=results_key,
                 )
         except ActiveJobExistsError as exc:
+            # Lost a race: another request created the job between our check and
+            # this insert. Hand back that job rather than erroring, keeping submit
+            # idempotent.
+            existing = self._jobs.find_active_for_video(video_id=command.video_id)
+            if existing is not None:
+                return existing
             raise JobError(
                 code=JOB_ALREADY_ACTIVE,
                 message="This video already has a job queued or running.",
