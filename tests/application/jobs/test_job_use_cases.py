@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from src.application.jobs.errors import (
     INVALID_JOB_STATUS,
@@ -234,6 +234,30 @@ class TestSubmitProcessingJob(unittest.TestCase):
         with self.assertRaises(JobError) as ctx:
             use_case.execute(SubmitProcessingJobCommand(USER_ID, TEAM_ID, VIDEO_ID))
         self.assertEqual(ctx.exception.code, JOB_ALREADY_ACTIVE)
+
+    def test_a_live_active_job_is_not_retired(self) -> None:
+        """A recent running job is real work in flight — leave it, reject the dupe."""
+
+        jobs = FakeJobRepository(raise_active=True)
+        jobs.jobs["old"] = build_job(
+            id="old", status=JobStatus.RUNNING, updated_at=datetime.now(timezone.utc)
+        )
+        use_case, _ = build_submit(jobs=jobs)
+        with self.assertRaises(JobError) as ctx:
+            use_case.execute(SubmitProcessingJobCommand(USER_ID, TEAM_ID, VIDEO_ID))
+        self.assertEqual(ctx.exception.code, JOB_ALREADY_ACTIVE)
+        self.assertEqual(jobs.failed_with, [])  # the live job was not touched
+
+    def test_a_stale_active_job_is_retired_so_a_new_one_can_run(self) -> None:
+        """A job whose worker died without a callback must not block the video forever."""
+
+        jobs = FakeJobRepository()
+        stale = datetime.now(timezone.utc) - timedelta(hours=2)
+        jobs.jobs["stuck"] = build_job(id="stuck", status=JobStatus.RUNNING, updated_at=stale)
+        use_case, _ = build_submit(jobs=jobs)
+        job = use_case.execute(SubmitProcessingJobCommand(USER_ID, TEAM_ID, VIDEO_ID))
+        self.assertEqual(job.status, JobStatus.QUEUED)  # new job created
+        self.assertIn("stuck", [job_id for job_id, _ in jobs.failed_with])  # old one retired
 
     def test_service_failure_marks_job_failed_and_reports_502(self) -> None:
         """A QUEUED row left behind would block this video forever."""
