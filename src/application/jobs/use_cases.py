@@ -100,15 +100,19 @@ class SubmitProcessingJobUseCase:
 
         _, storage_key = video
 
-        # Retire a stale active job (worker died without a terminal callback) so a
-        # dead job never blocks the video forever. A still-live job is left alone
-        # and the unique index below correctly rejects the duplicate.
+        # Submitting is idempotent per video: if a live job is already processing
+        # this video, hand it back so the client just navigates to its screen —
+        # never an error. A dead job (worker died without a terminal callback) is
+        # retired first so it cannot block the video forever.
         active = self._jobs.find_active_for_video(video_id=command.video_id)
-        if active is not None and _is_stale_active_job(active):
-            self._jobs.mark_failed(
-                job_id=active.id,
-                error_message="Job exceeded the maximum runtime without reporting; marked stale.",
-            )
+        if active is not None:
+            if _is_stale_active_job(active):
+                self._jobs.mark_failed(
+                    job_id=active.id,
+                    error_message="Job exceeded the maximum runtime without reporting; marked stale.",
+                )
+            else:
+                return active
 
         job_id = self._ids.new_id()
         results_key = RESULTS_KEY_TEMPLATE.format(team_id=command.team_id, job_id=job_id)
@@ -129,6 +133,12 @@ class SubmitProcessingJobUseCase:
                     results_key=results_key,
                 )
         except ActiveJobExistsError as exc:
+            # Lost a race: another request created the job between our check and
+            # this insert. Hand back that job rather than erroring, keeping submit
+            # idempotent.
+            existing = self._jobs.find_active_for_video(video_id=command.video_id)
+            if existing is not None:
+                return existing
             raise JobError(
                 code=JOB_ALREADY_ACTIVE,
                 message="This video already has a job queued or running.",
