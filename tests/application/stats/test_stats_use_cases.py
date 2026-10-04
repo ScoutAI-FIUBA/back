@@ -304,6 +304,45 @@ class TestGetTeamSides(unittest.TestCase):
         result = use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
         self.assertEqual(result["our_team_side"], 1)
 
+    # v2 output keys numbers by stable_player_id and splits each player across
+    # many segmented track_ids; the side's numbers must still come through.
+    TEAMS_V2 = {"assignments_by_track_id": {"10": 1, "11": 1, "12": 1, "20": 0, "21": 0}}
+    NUMBERS_V2 = {"players": [
+        {"stable_player_id": "A", "status": "confirmed", "number": "7"},
+        {"stable_player_id": "B", "status": "confirmed", "number": "9"},
+        {"stable_player_id": "C", "status": "confirmed", "number": "23"},
+    ]}
+    # track 10 and 11 are the same player A; 12 is B (side 1); 20,21 are C (side 0).
+    ROWS_V2 = [
+        {"track_id": 10, "stable_player_id": "A"},
+        {"track_id": 11, "stable_player_id": "A"},
+        {"track_id": 12, "stable_player_id": "B"},
+        {"track_id": 20, "stable_player_id": "C"},
+        {"track_id": 21, "stable_player_id": "C"},
+    ]
+
+    def test_v2_resolves_numbers_per_side_through_stable_players(self) -> None:
+        use_case = GetTeamSidesUseCase(
+            jobs=FakeJobs(build_job()),
+            artifacts=FakeReader(
+                {"teams.json": self.TEAMS_V2, "numbers.json": self.NUMBERS_V2},
+                rows=self.ROWS_V2,
+            ),
+            team_access=FakeAccess(),
+            roster=FakeRoster(self.ROSTER),
+        )
+        result = use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+
+        side1 = next(s for s in result["sides"] if s["team_side"] == 1)
+        side0 = next(s for s in result["sides"] if s["team_side"] == 0)
+        # Players A and B collapse 3 tracks into 2 on side 1; numbers show.
+        self.assertEqual(side1["track_count"], 2)
+        self.assertEqual(side1["numbers"], ["7", "9"])
+        self.assertEqual(side1["roster_matches"], 2)
+        self.assertEqual(side0["track_count"], 1)
+        self.assertEqual(side0["numbers"], ["23"])
+        self.assertEqual(result["suggested_team_side"], 1)
+
 
 class FakeJobsForSimilar:
     def __init__(self, target, others):

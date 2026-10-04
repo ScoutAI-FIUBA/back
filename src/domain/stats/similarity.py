@@ -16,7 +16,9 @@ import math
 
 from src.domain.stats.court import COURT_LENGTH_M, COURT_WIDTH_M, describe_shot, is_on_court
 
-FEATURE_VERSION = 1
+# v2: movement is grouped per real player (stable_player_id) rather than per
+# segmented track, so a bump invalidates features cached under the old grouping.
+FEATURE_VERSION = 2
 
 # Court-occupancy grid: length is split into more cells than width because play
 # moves mostly end-to-end. 6 x 3 = 18 cells is coarse enough to be stable under
@@ -73,7 +75,10 @@ def _movement_features(position_rows: list[dict]) -> tuple[list[float], float, f
     """Occupancy grid, mean tempo (m per sample), mean spread (m)."""
 
     cells = [0.0] * (GRID_LENGTH_CELLS * GRID_WIDTH_CELLS)
-    by_track: dict[int, list[tuple[float, float]]] = {}
+    # Keyed by stable_player_id when the row carries one (v2), else track_id (v1).
+    # v2 splits a player across many segmented tracks; grouping by track would
+    # read as a crowd of short, choppy paths and distort tempo.
+    by_player: dict[object, list[tuple[float, float]]] = {}
     by_frame: dict[int, list[tuple[float, float]]] = {}
 
     for row in position_rows:
@@ -85,13 +90,16 @@ def _movement_features(position_rows: list[dict]) -> tuple[list[float], float, f
         if not is_on_court(point):
             continue
         cells[_cell_index(point[0], point[1])] += 1
-        by_track.setdefault(int(track_id), []).append(point)
+        player_key = row.get("stable_player_id")
+        if player_key is None:
+            player_key = int(track_id)
+        by_player.setdefault(player_key, []).append(point)
         frame = row.get("frame_index")
         if frame is not None:
             by_frame.setdefault(int(frame), []).append(point)
 
     tempos: list[float] = []
-    for path in by_track.values():
+    for path in by_player.values():
         if len(path) < 2:
             continue
         steps = [math.dist(path[i - 1], path[i]) for i in range(1, len(path))]

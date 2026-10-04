@@ -251,8 +251,16 @@ def build_game_stats(
 
     # v2 fragments one player into several stable ids that still read the same
     # number; merge those on (team, confirmed number) so a player is counted once.
+    # The shots were tagged with the pre-merge stable id, so re-point them at the
+    # surviving player — otherwise a per-player chart would miss a sibling
+    # fragment's shots and the shot's roster label would not resolve.
     if track_to_stable:
-        players = _merge_number_fragments(players)
+        players, fragment_remap = _merge_number_fragments(players)
+        if fragment_remap:
+            for row in shot_rows:
+                primary = fragment_remap.get(row["stable_player_id"])
+                if primary is not None:
+                    row["stable_player_id"] = primary
 
     # The ten on court are the five most-tracked players per team.
     _mark_on_court(players)
@@ -309,16 +317,20 @@ def build_game_stats(
     )
 
 
-def _merge_number_fragments(players: dict) -> dict:
+def _merge_number_fragments(players: dict) -> tuple[dict, dict]:
     """Collapse players that share a team and a confirmed number into one.
 
     v2 can split a single player across segments into several stable ids that all
     read, say, #7 on team 1. Those are the same person; merge their shooting and
     observations so the box score counts them once. Players with no number, or a
     unique (team, number), are left untouched.
+
+    Returns the merged players plus a remap of each merged-away player key to the
+    surviving one, so shot rows tagged with the old id can be re-pointed.
     """
 
     merged: dict = {}
+    remap: dict = {}
     by_number: dict[tuple[int, str], object] = {}
     for key, player in players.items():
         if player.jersey_number is None or player.team_id is None:
@@ -330,6 +342,7 @@ def _merge_number_fragments(players: dict) -> dict:
             by_number[number_key] = key
             merged[key] = player
             continue
+        remap[key] = primary_key
         primary = merged[primary_key]
         primary.observations += player.observations
         primary.shooting.attempted += player.shooting.attempted
@@ -342,7 +355,7 @@ def _merge_number_fragments(players: dict) -> dict:
             bucket = primary.shooting.by_zone.setdefault(zone, {"made": 0, "attempted": 0})
             bucket["made"] += tally["made"]
             bucket["attempted"] += tally["attempted"]
-    return merged
+    return merged, remap
 
 
 def _mark_on_court(players: dict) -> None:

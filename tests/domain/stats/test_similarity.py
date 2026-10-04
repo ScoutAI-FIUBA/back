@@ -62,6 +62,20 @@ class TestBuildFeatures(unittest.TestCase):
         )
         self.assertEqual(features["tempo_m_per_sample"], 5.0)
 
+    def test_v2_tempo_groups_segments_of_one_player_by_stable_id(self) -> None:
+        # One player at x = 0, 1, 10, 11 — a big jump mid-path — split across two
+        # segmented track_ids at the jump. As one path the steps are 1, 9, 1
+        # (mean 3.6667); grouped by track the 9m jump vanishes and both segments
+        # read a tempo of 1.0, so grouping by stable id is what keeps it honest.
+        rows = [
+            {"frame_index": 0, "track_id": 11, "stable_player_id": "p", "court_xy_m": [0.0, 7.5]},
+            {"frame_index": 1, "track_id": 11, "stable_player_id": "p", "court_xy_m": [1.0, 7.5]},
+            {"frame_index": 2, "track_id": 77, "stable_player_id": "p", "court_xy_m": [10.0, 7.5]},
+            {"frame_index": 3, "track_id": 77, "stable_player_id": "p", "court_xy_m": [11.0, 7.5]},
+        ]
+        features = build_clip_features(shots_document=None, position_rows=rows)
+        self.assertEqual(features["tempo_m_per_sample"], 3.6667)
+
     def test_spread_measures_distance_from_the_frame_centroid(self) -> None:
         features = build_clip_features(
             shots_document=None,

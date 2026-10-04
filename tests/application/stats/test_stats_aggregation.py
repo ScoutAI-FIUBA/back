@@ -380,6 +380,34 @@ class TestV2Grouping(unittest.TestCase):
         self.assertEqual(len(sevens), 1)
         self.assertEqual(sevens[0]["observations"], 500)  # 300 + 200 merged
 
+    def test_merged_fragment_shots_follow_the_surviving_player(self) -> None:
+        # Two stable ids are the same #7: each took one shot under its own id.
+        # After the merge the chart filtered to the surviving id must show both,
+        # or the shot chart would disagree with the box-score total.
+        teams = {"assignments_by_track_id": {"1": 1, "2": 1}}
+        numbers = {"players": [
+            {"stable_player_id": "s1", "number": "7", "status": "confirmed"},
+            {"stable_player_id": "s2", "number": "7", "status": "confirmed"},
+        ]}
+        kwargs = dict(
+            shots_document=shots(
+                shot(event_id=1, shooter_track_id=1),
+                shot(event_id=2, shooter_track_id=2, outcome="missed"),
+            ),
+            teams_document=teams,
+            numbers_document=numbers,
+            track_to_stable={1: "s1", 2: "s2"},
+            observations_by_stable={"s1": 300, "s2": 200},
+        )
+        g = build_game_stats(**kwargs).to_dict()
+        survivor = next(p for p in g["players"] if p["jersey_number"] == "7")
+        self.assertEqual(survivor["field_goals_attempted"], 2)
+
+        chart = build_shot_chart(**kwargs, stable_player_id=survivor["stable_player_id"])
+        self.assertEqual(len(chart["shots"]), 2)
+        self.assertEqual(len(chart["players"]), 1)
+        self.assertEqual(chart["players"][0]["stable_player_id"], survivor["stable_player_id"])
+
     def test_five_most_present_per_team_are_on_court(self) -> None:
         teams = {"assignments_by_track_id": {str(i): 1 for i in range(6)}}
         t2s = {i: f"p{i}" for i in range(6)}
