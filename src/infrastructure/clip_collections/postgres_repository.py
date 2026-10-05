@@ -44,6 +44,7 @@ def _row_to_item(row: dict[str, Any] | None) -> ClipCollectionItem | None:
         collection_id=str(row["collection_id"]),
         start_ms=row["start_ms"],
         end_ms=row["end_ms"],
+        description=row.get("description"),
         position=row["position"],
         created_at=row["created_at"],
     )
@@ -156,9 +157,9 @@ class PostgresClipCollectionRepository:
                 cur.execute(
                     """
                     INSERT INTO clip_collection_items (
-                        id, collection_id, start_ms, end_ms, position, created_at
+                        id, collection_id, start_ms, end_ms, description, position, created_at
                     ) VALUES (
-                        %(id)s::uuid, %(collection_id)s::uuid, %(start_ms)s, %(end_ms)s, %(position)s, %(created_at)s
+                        %(id)s::uuid, %(collection_id)s::uuid, %(start_ms)s, %(end_ms)s, %(description)s, %(position)s, %(created_at)s
                     )
                     RETURNING *
                     """,
@@ -167,6 +168,7 @@ class PostgresClipCollectionRepository:
                         "collection_id": collection_id,
                         "start_ms": item.start_ms,
                         "end_ms": item.end_ms,
+                        "description": item.description,
                         "position": next_position,
                         "created_at": now,
                     },
@@ -205,6 +207,35 @@ class PostgresClipCollectionRepository:
                   AND c.owner_user_id = %(owner_user_id)s
                 """,
                 {"item_id": item_id, "collection_id": collection_id, "owner_user_id": owner_user_id},
+            )
+            return _row_to_item(cur.fetchone())
+
+    def update_item_description(
+        self,
+        *,
+        item_id: str,
+        collection_id: str,
+        owner_user_id: str,
+        description: str | None,
+    ) -> ClipCollectionItem | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE clip_collection_items i
+                SET description = %(description)s
+                FROM clip_collections c
+                WHERE i.id = %(item_id)s::uuid
+                  AND i.collection_id = %(collection_id)s::uuid
+                  AND c.id = i.collection_id
+                  AND c.owner_user_id = %(owner_user_id)s
+                RETURNING i.*
+                """,
+                {
+                    "item_id": item_id,
+                    "collection_id": collection_id,
+                    "owner_user_id": owner_user_id,
+                    "description": description,
+                },
             )
             return _row_to_item(cur.fetchone())
 
