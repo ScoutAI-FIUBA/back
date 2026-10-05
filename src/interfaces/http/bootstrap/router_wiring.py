@@ -88,6 +88,7 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             add_clip_batch_use_case=deps.add_clip_batch_use_case,
             delete_item_use_case=deps.delete_clip_collection_item_use_case,
             export_clip_item_use_case=deps.export_clip_item_use_case,
+            update_clip_description_use_case=deps.update_clip_description_use_case,
         )
     )
     app.include_router(
