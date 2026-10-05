@@ -26,6 +26,8 @@ from src.application.clip_collections.use_cases import (
     ExportClipItemCommand,
     ExportClipItemUseCase,
     GetClipCollectionDetailUseCase,
+    UpdateClipDescriptionCommand,
+    UpdateClipDescriptionUseCase,
 )
 from src.domain.clip_collections.entities import ClipCollection, ClipCollectionItem
 
@@ -44,12 +46,13 @@ def _collection(collection_id: str = "collection-1") -> ClipCollection:
     )
 
 
-def _item(item_id: str, position: int = 1) -> ClipCollectionItem:
+def _item(item_id: str, position: int = 1, description: str | None = None) -> ClipCollectionItem:
     return ClipCollectionItem(
         id=item_id,
         collection_id="collection-1",
         start_ms=5_000,
         end_ms=10_000,
+        description=description,
         position=position,
         created_at=datetime.now(timezone.utc),
     )
@@ -96,6 +99,7 @@ class _CollectionsRepo:
                 collection_id=collection_id,
                 start_ms=item.start_ms,
                 end_ms=item.end_ms,
+                description=item.description,
                 position=len(stored) + index + 1,
                 created_at=datetime.now(timezone.utc),
             )
@@ -113,6 +117,23 @@ class _CollectionsRepo:
         for item in self.items.get(collection_id, []):
             if item.id == item_id:
                 return item
+        return None
+
+    def update_item_description(self, *, item_id: str, collection_id: str, owner_user_id: str, description: str | None):
+        del owner_user_id
+        for index, item in enumerate(self.items.get(collection_id, [])):
+            if item.id == item_id:
+                updated = ClipCollectionItem(
+                    id=item.id,
+                    collection_id=item.collection_id,
+                    start_ms=item.start_ms,
+                    end_ms=item.end_ms,
+                    description=description,
+                    position=item.position,
+                    created_at=item.created_at,
+                )
+                self.items[collection_id][index] = updated
+                return updated
         return None
 
     def delete_item(self, *, item_id: str, collection_id: str, owner_user_id: str) -> bool:
@@ -193,6 +214,7 @@ class TestClipCollectionUseCases(unittest.TestCase):
                         collection_id=collection.id,
                         start_ms=5_000,
                         end_ms=10_000,
+                        description=None,
                     ),
                     AddClipCommand(
                         user_id="user-1",
@@ -200,6 +222,7 @@ class TestClipCollectionUseCases(unittest.TestCase):
                         collection_id=collection.id,
                         start_ms=10_000,
                         end_ms=15_000,
+                        description=None,
                     ),
                 ],
             )
@@ -245,6 +268,7 @@ class TestClipCollectionUseCases(unittest.TestCase):
                     collection_id="collection-1",
                     start_ms=1_000,
                     end_ms=5_000,
+                    description=None,
                 )
             )
         self.assertEqual(forbidden_ctx.exception.code, FORBIDDEN_TEAM_ACCESS)
@@ -273,6 +297,7 @@ class TestClipCollectionUseCases(unittest.TestCase):
                     collection_id="collection-1",
                     start_ms=1_000,
                     end_ms=5_000,
+                    description=None,
                 )
             )
 
@@ -297,6 +322,7 @@ class TestClipCollectionUseCases(unittest.TestCase):
                                 collection_id="collection-1",
                                 start_ms=start_ms,
                                 end_ms=end_ms,
+                                description=None,
                             )
                         ],
                     )
@@ -317,10 +343,118 @@ class TestClipCollectionUseCases(unittest.TestCase):
                 collection_id="collection-1",
                 start_ms=50_000,
                 end_ms=60_000,
+                description=None,
             )
         )
 
         self.assertEqual((item.start_ms, item.end_ms), (50_000, 60_000))
+
+    def test_add_clip_and_batch_carry_description(self) -> None:
+        repo = _CollectionsRepo()
+        create_use_case = CreateClipCollectionUseCase(collections=repo, videos=_Videos(), ids=_Ids(), uow=_Uow())
+        collection = create_use_case.execute(
+            CreateClipCollectionCommand(user_id="user-1", video_id="video-1", name="Highlights", description=None)
+        )
+
+        add_use_case = AddClipUseCase(
+            batch_use_case=AddClipBatchUseCase(collections=repo, videos=_Videos(), ids=_Ids(), uow=_Uow())
+        )
+        single = add_use_case.execute(
+            AddClipCommand(
+                user_id="user-1",
+                video_id="video-1",
+                collection_id=collection.id,
+                start_ms=1_000,
+                end_ms=5_000,
+                description="Opening play",
+            )
+        )
+        self.assertEqual(single.description, "Opening play")
+
+        batch = add_use_case._batch_use_case.execute(
+            AddClipBatchCommand(
+                user_id="user-1",
+                video_id="video-1",
+                collection_id=collection.id,
+                clips=[
+                    AddClipCommand(
+                        user_id="user-1",
+                        video_id="video-1",
+                        collection_id=collection.id,
+                        start_ms=5_000,
+                        end_ms=9_000,
+                        description=None,
+                    ),
+                    AddClipCommand(
+                        user_id="user-1",
+                        video_id="video-1",
+                        collection_id=collection.id,
+                        start_ms=9_000,
+                        end_ms=12_000,
+                        description="Final shot",
+                    ),
+                ],
+            )
+        )
+        self.assertEqual([item.description for item in batch], [None, "Final shot"])
+
+    def test_update_clip_description_and_clear(self) -> None:
+        repo = _CollectionsRepo()
+        repo.collections["collection-1"] = _collection()
+        repo.items["collection-1"] = [_item("item-1", description="Old")]
+
+        use_case = UpdateClipDescriptionUseCase(collections=repo, videos=_Videos(), uow=_Uow())
+        updated = use_case.execute(
+            UpdateClipDescriptionCommand(
+                user_id="user-1",
+                video_id="video-1",
+                collection_id="collection-1",
+                item_id="item-1",
+                description="New label",
+            )
+        )
+        self.assertEqual(updated.description, "New label")
+
+        cleared = use_case.execute(
+            UpdateClipDescriptionCommand(
+                user_id="user-1",
+                video_id="video-1",
+                collection_id="collection-1",
+                item_id="item-1",
+                description=None,
+            )
+        )
+        self.assertIsNone(cleared.description)
+
+    def test_update_clip_description_maps_missing_collection_and_item(self) -> None:
+        repo = _CollectionsRepo()
+        repo.collections["collection-1"] = _collection()
+
+        use_case = UpdateClipDescriptionUseCase(collections=repo, videos=_Videos(), uow=_Uow())
+
+        with self.assertRaises(ClipCollectionError) as missing_collection_ctx:
+            use_case.execute(
+                UpdateClipDescriptionCommand(
+                    user_id="user-1",
+                    video_id="video-1",
+                    collection_id="missing-collection",
+                    item_id="item-1",
+                    description="Label",
+                )
+            )
+        self.assertEqual(missing_collection_ctx.exception.code, CLIP_COLLECTION_NOT_FOUND)
+
+        with self.assertRaises(ClipCollectionError) as missing_item_ctx:
+            use_case.execute(
+                UpdateClipDescriptionCommand(
+                    user_id="user-1",
+                    video_id="video-1",
+                    collection_id="collection-1",
+                    item_id="missing-item",
+                    description="Label",
+                )
+            )
+        self.assertEqual(missing_item_ctx.exception.code, CLIP_COLLECTION_ITEM_NOT_FOUND)
 
     def test_export_clip_uses_cache_hit_without_regeneration(self) -> None:
         repo = _CollectionsRepo()

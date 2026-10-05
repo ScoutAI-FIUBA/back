@@ -52,6 +52,7 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
                     item_id="item-1",
                     start_ms=1_000,
                     end_ms=2_000,
+                    description=None,
                 )
             ],
         )
@@ -71,6 +72,7 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
                     "collection_id": "collection-1",
                     "start_ms": 1_000,
                     "end_ms": 2_000,
+                    "description": None,
                     "position": 3,
                     "created_at": now,
                 },
@@ -79,6 +81,7 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
                     "collection_id": "collection-1",
                     "start_ms": 2_000,
                     "end_ms": 3_000,
+                    "description": "Second",
                     "position": 4,
                     "created_at": now,
                 },
@@ -94,11 +97,13 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
                     item_id="item-1",
                     start_ms=1_000,
                     end_ms=2_000,
+                    description=None,
                 ),
                 PendingClipItem(
                     item_id="item-2",
                     start_ms=2_000,
                     end_ms=3_000,
+                    description="Second",
                 ),
             ],
         )
@@ -119,6 +124,7 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
                     "collection_id": "collection-1",
                     "start_ms": 4_000,
                     "end_ms": 8_000,
+                    "description": "Export clip",
                     "position": 1,
                     "created_at": now,
                 }
@@ -130,7 +136,50 @@ class TestPostgresClipCollectionRepository(unittest.TestCase):
 
         assert item is not None
         self.assertEqual((item.start_ms, item.end_ms), (4_000, 8_000))
+        self.assertEqual(item.description, "Export clip")
         self.assertIn("FROM clip_collection_items", connection.executed[0][0])
+
+    def test_update_item_description_returns_updated_row(self) -> None:
+        now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        connection = _Connection(
+            [
+                {
+                    "id": "item-1",
+                    "collection_id": "collection-1",
+                    "start_ms": 4_000,
+                    "end_ms": 8_000,
+                    "description": "Updated",
+                    "position": 1,
+                    "created_at": now,
+                }
+            ]
+        )
+        repository = PostgresClipCollectionRepository(connection=connection)
+
+        item = repository.update_item_description(
+            item_id="item-1",
+            collection_id="collection-1",
+            owner_user_id="user-1",
+            description="Updated",
+        )
+
+        assert item is not None
+        self.assertEqual(item.description, "Updated")
+        self.assertIn("UPDATE clip_collection_items", connection.executed[0][0])
+        self.assertEqual(connection.executed[0][1]["description"], "Updated")
+
+    def test_update_item_description_returns_none_for_missing_item(self) -> None:
+        connection = _Connection([None])
+        repository = PostgresClipCollectionRepository(connection=connection)
+
+        item = repository.update_item_description(
+            item_id="missing",
+            collection_id="collection-1",
+            owner_user_id="user-1",
+            description="Updated",
+        )
+
+        self.assertIsNone(item)
 
 
 if __name__ == "__main__":
