@@ -21,6 +21,7 @@ class PendingClipItem:
     item_id: str
     start_ms: int
     end_ms: int
+    description: str | None
 
 
 class ClipCollectionRepositoryPort(ABC):
@@ -56,6 +57,16 @@ class ClipCollectionRepositoryPort(ABC):
 
     @abstractmethod
     def get_item(self, *, item_id: str, collection_id: str, owner_user_id: str) -> ClipCollectionItem | None: ...
+
+    @abstractmethod
+    def update_item_description(
+        self,
+        *,
+        item_id: str,
+        collection_id: str,
+        owner_user_id: str,
+        description: str | None,
+    ) -> ClipCollectionItem | None: ...
 
     @abstractmethod
     def delete_item(self, *, item_id: str, collection_id: str, owner_user_id: str) -> bool: ...
