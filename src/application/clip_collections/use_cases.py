@@ -41,6 +41,7 @@ class AddClipCommand:
     collection_id: str
     start_ms: int
     end_ms: int
+    description: str | None
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,15 @@ class ExportClipItemCommand:
     video_id: str
     collection_id: str
     item_id: str
+
+
+@dataclass(frozen=True)
+class UpdateClipDescriptionCommand:
+    user_id: str
+    video_id: str
+    collection_id: str
+    item_id: str
+    description: str | None
 
 
 def _raise_invalid_clip_range(*, start_ms: int, end_ms: int, duration_ms: int | None, reason: str) -> None:
@@ -203,6 +213,7 @@ class AddClipBatchUseCase:
                 item_id=self._ids.new_id(),
                 start_ms=clip.start_ms,
                 end_ms=clip.end_ms,
+                description=clip.description,
             )
             for clip in command.clips
         ]
@@ -253,6 +264,39 @@ class DeleteClipCollectionItemUseCase:
             )
         if not deleted:
             raise ClipCollectionError(code=CLIP_COLLECTION_ITEM_NOT_FOUND, message="Clip collection item not found")
+
+
+class UpdateClipDescriptionUseCase:
+    def __init__(
+        self,
+        *,
+        collections: ClipCollectionRepositoryPort,
+        videos: OwnedVideoLookupPort,
+        uow: UnitOfWorkPort,
+    ) -> None:
+        self._collections = collections
+        self._videos = videos
+        self._uow = uow
+
+    def execute(self, command: UpdateClipDescriptionCommand) -> ClipCollectionItem:
+        ctx = _assert_owned_video(videos=self._videos, user_id=command.user_id, video_id=command.video_id)
+        collection = self._collections.get_by_id(
+            collection_id=command.collection_id,
+            video_id=ctx.video_id,
+            owner_user_id=ctx.owner_user_id,
+        )
+        if collection is None:
+            raise ClipCollectionError(code=CLIP_COLLECTION_NOT_FOUND, message="Clip collection not found")
+        with self._uow.transaction():
+            updated = self._collections.update_item_description(
+                item_id=command.item_id,
+                collection_id=command.collection_id,
+                owner_user_id=ctx.owner_user_id,
+                description=command.description,
+            )
+        if updated is None:
+            raise ClipCollectionError(code=CLIP_COLLECTION_ITEM_NOT_FOUND, message="Clip collection item not found")
+        return updated
 
 
 class ExportClipItemUseCase:

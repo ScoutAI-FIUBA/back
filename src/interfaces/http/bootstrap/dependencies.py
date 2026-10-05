@@ -40,6 +40,7 @@ from src.application.clip_collections.use_cases import (
     ExportClipItemUseCase,
     GetClipCollectionDetailUseCase,
     ListClipCollectionsUseCase,
+    UpdateClipDescriptionUseCase,
 )
 from src.application.matches.use_cases import (
     CreateMatchUseCase,
@@ -270,6 +271,7 @@ class HttpDependencies:
     get_clip_collection_detail_use_case: GetClipCollectionDetailUseCase
     add_clip_use_case: AddClipUseCase
     add_clip_batch_use_case: AddClipBatchUseCase
+    update_clip_description_use_case: UpdateClipDescriptionUseCase
     delete_clip_collection_item_use_case: DeleteClipCollectionItemUseCase
     submit_processing_job_use_case: SubmitProcessingJobUseCase
     get_processing_job_use_case: GetProcessingJobUseCase
@@ -595,6 +597,11 @@ def build_http_dependencies(
         ),
         add_clip_batch_use_case=add_clip_batch_use_case,
         add_clip_use_case=AddClipUseCase(batch_use_case=add_clip_batch_use_case),
+        update_clip_description_use_case=UpdateClipDescriptionUseCase(
+            collections=clip_collections_repo,
+            videos=videos_repo,
+            uow=uow,
+        ),
         delete_clip_collection_item_use_case=DeleteClipCollectionItemUseCase(
             collections=clip_collections_repo,
             videos=videos_repo,

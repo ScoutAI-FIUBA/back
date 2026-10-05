@@ -47,6 +47,23 @@ class _ExportFailureUC:
         raise ClipCollectionError(code=CLIP_EXPORT_FAILED, message="Clip export failed")
 
 
+class _UpdateDescriptionUC:
+    def execute(self, command):
+        return type(
+            "Item",
+            (),
+            {
+                "id": command.item_id,
+                "collection_id": command.collection_id,
+                "start_ms": 1000,
+                "end_ms": 5000,
+                "description": command.description,
+                "position": 1,
+                "created_at": __import__("datetime").datetime(2026, 1, 1),
+            },
+        )()
+
+
 class TestClipCollectionsRouter(unittest.TestCase):
     def setUp(self) -> None:
         app = FastAPI()
@@ -65,6 +82,7 @@ class TestClipCollectionsRouter(unittest.TestCase):
                 add_clip_batch_use_case=_ForbiddenUC(),
                 delete_item_use_case=_ForbiddenUC(),
                 export_clip_item_use_case=_ExportUC(),
+                update_clip_description_use_case=_UpdateDescriptionUC(),
             )
         )
         self.client = TestClient(app)
@@ -119,6 +137,7 @@ class TestClipCollectionsRouter(unittest.TestCase):
                 add_clip_batch_use_case=_ForbiddenUC(),
                 delete_item_use_case=_ForbiddenUC(),
                 export_clip_item_use_case=_ExportUC(),
+                update_clip_description_use_case=_UpdateDescriptionUC(),
             )
         )
         client = TestClient(app)
@@ -147,6 +166,7 @@ class TestClipCollectionsRouter(unittest.TestCase):
                 add_clip_batch_use_case=_ForbiddenUC(),
                 delete_item_use_case=_ForbiddenUC(),
                 export_clip_item_use_case=_ExportUC(),
+                update_clip_description_use_case=_UpdateDescriptionUC(),
             )
         )
         client = TestClient(app)
@@ -175,6 +195,7 @@ class TestClipCollectionsRouter(unittest.TestCase):
                 add_clip_batch_use_case=_InvalidRangeUC(),
                 delete_item_use_case=_ForbiddenUC(),
                 export_clip_item_use_case=_ExportUC(),
+                update_clip_description_use_case=_UpdateDescriptionUC(),
             )
         )
         client = TestClient(app)
@@ -210,6 +231,7 @@ class TestClipCollectionsRouter(unittest.TestCase):
                 add_clip_batch_use_case=_ForbiddenUC(),
                 delete_item_use_case=_ForbiddenUC(),
                 export_clip_item_use_case=_ExportFailureUC(),
+                update_clip_description_use_case=_UpdateDescriptionUC(),
             )
         )
         client = TestClient(app)
@@ -219,6 +241,35 @@ class TestClipCollectionsRouter(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json()["error"]["code"], CLIP_EXPORT_FAILED)
+
+    def test_add_clip_rejects_description_longer_than_200_chars(self) -> None:
+        response = self.client.post(
+            "/videos/00000000-0000-4000-8000-000000000001/collections/00000000-0000-4000-8000-000000000002/clips",
+            json={"start_ms": 1000, "end_ms": 5000, "description": "x" * 201},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_add_clip_batch_rejects_description_longer_than_200_chars(self) -> None:
+        response = self.client.post(
+            "/videos/00000000-0000-4000-8000-000000000001/collections/00000000-0000-4000-8000-000000000002/clips/batch",
+            json={"clips": [{"start_ms": 1000, "end_ms": 5000, "description": "x" * 201}]},
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_update_clip_description_returns_updated_item(self) -> None:
+        response = self.client.patch(
+            "/videos/00000000-0000-4000-8000-000000000001/collections/00000000-0000-4000-8000-000000000002/clips/00000000-0000-4000-8000-000000000003",
+            json={"description": "Updated label"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["item"]["description"], "Updated label")
+
+    def test_update_clip_description_rejects_too_long_description(self) -> None:
+        response = self.client.patch(
+            "/videos/00000000-0000-4000-8000-000000000001/collections/00000000-0000-4000-8000-000000000002/clips/00000000-0000-4000-8000-000000000003",
+            json={"description": "x" * 201},
+        )
+        self.assertEqual(response.status_code, 422)
 
 
 if __name__ == "__main__":

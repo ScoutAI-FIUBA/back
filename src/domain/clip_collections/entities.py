@@ -22,5 +22,6 @@ class ClipCollectionItem:
     collection_id: str
     start_ms: int
     end_ms: int
+    description: str | None
     position: int
     created_at: datetime

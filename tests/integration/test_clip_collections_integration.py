@@ -196,19 +196,20 @@ def test_clip_collections_happy_path_single_batch_and_delete(client_factory) -> 
 
     single = client.post(
         f"/videos/{video_id}/collections/{collection_id}/clips",
-        json={"start_ms": 1000, "end_ms": 5000},
+        json={"start_ms": 1000, "end_ms": 5000, "description": "Opening play"},
     )
     assert single.status_code == 201
     first_item = single.json()["item"]
     assert first_item["start_ms"] == 1000
     assert first_item["end_ms"] == 5000
+    assert first_item["description"] == "Opening play"
 
     batch = client.post(
         f"/videos/{video_id}/collections/{collection_id}/clips/batch",
         json={
             "clips": [
                 {"start_ms": 5000, "end_ms": 9000},
-                {"start_ms": 9000, "end_ms": 12000},
+                {"start_ms": 9000, "end_ms": 12000, "description": "Final shot"},
             ]
         },
     )
@@ -219,6 +220,33 @@ def test_clip_collections_happy_path_single_batch_and_delete(client_factory) -> 
     assert detail.status_code == 200
     assert [item["position"] for item in detail.json()["items"]] == [1, 2, 3]
     assert detail.json()["items"][0]["start_ms"] == 1000
+    assert [item["description"] for item in detail.json()["items"]] == ["Opening play", None, "Final shot"]
+
+    updated = client.patch(
+        f"/videos/{video_id}/collections/{collection_id}/clips/{first_item['id']}",
+        json={"description": "Renamed clip"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["item"]["description"] == "Renamed clip"
+
+    cleared = client.patch(
+        f"/videos/{video_id}/collections/{collection_id}/clips/{first_item['id']}",
+        json={"description": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["item"]["description"] is None
+
+    too_long = client.patch(
+        f"/videos/{video_id}/collections/{collection_id}/clips/{first_item['id']}",
+        json={"description": "x" * 201},
+    )
+    assert too_long.status_code == 422
+
+    missing_item = client.patch(
+        f"/videos/{video_id}/collections/{collection_id}/clips/00000000-0000-4000-8000-000000000000",
+        json={"description": "Label"},
+    )
+    assert missing_item.status_code == 404
 
     export_response = client.post(f"/videos/{video_id}/collections/{collection_id}/clips/{first_item['id']}/export")
     assert export_response.status_code == 200
@@ -294,6 +322,7 @@ def test_clip_collection_migration_converges_legacy_schema_once_and_stays_stable
                 columns = [row[0] for row in cur.fetchall()]
                 assert "start_ms" in columns
                 assert "end_ms" in columns
+                assert "description" in columns
                 assert "filename" not in columns
                 assert "storage_key" not in columns
                 assert "cloudflare_url" not in columns
