@@ -67,6 +67,20 @@ class VideoRepositoryPort(ABC):
     @abstractmethod
     def soft_delete(self, *, video_id: str, team_id: str) -> Video | None: ...
 
+    @abstractmethod
+    def set_thumbnail_key(
+        self,
+        *,
+        video_id: str,
+        team_id: str,
+        thumbnail_key: str,
+    ) -> Video | None: ...
+
+
+class ThumbnailGeneratorPort(ABC):
+    @abstractmethod
+    def generate(self, *, source_key: str, thumbnail_key: str) -> None: ...
+
 
 class VideoStoragePort(ABC):
     @abstractmethod
@@ -106,4 +120,11 @@ class TeamAccessPort(ABC):
     def assert_access(self, *, user_id: str, team_id: str) -> None: ...
 
 
-__all__ = ["IdGeneratorPort", "TeamAccessPort", "UnitOfWorkPort", "VideoRepositoryPort", "VideoStoragePort"]
+__all__ = [
+    "IdGeneratorPort",
+    "TeamAccessPort",
+    "ThumbnailGeneratorPort",
+    "UnitOfWorkPort",
+    "VideoRepositoryPort",
+    "VideoStoragePort",
+]

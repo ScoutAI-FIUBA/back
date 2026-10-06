@@ -43,6 +43,7 @@ def _row_to_video(row: dict[str, Any] | None) -> Video | None:
         deleted_at=row.get("deleted_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        thumbnail_key=row.get("thumbnail_key"),
     )
 
 
@@ -222,6 +223,20 @@ class PostgresVideoRepository:
                     "failed": VideoStatus.FAILED.value,
                     "pending": VideoStatus.PENDING_UPLOAD.value,
                 },
+            )
+            return _row_to_video(cur.fetchone())
+
+    def set_thumbnail_key(self, *, video_id: str, team_id: str, thumbnail_key: str) -> Video | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET thumbnail_key = %(thumbnail_key)s,
+                    updated_at = NOW()
+                WHERE id = %(video_id)s::uuid AND team_id = %(team_id)s::uuid AND deleted_at IS NULL
+                RETURNING *
+                """,
+                {"video_id": video_id, "team_id": team_id, "thumbnail_key": thumbnail_key},
             )
             return _row_to_video(cur.fetchone())
 
