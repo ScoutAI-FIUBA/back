@@ -15,11 +15,18 @@ from src.infrastructure.video.postgres_video_repository import PostgresVideoRepo
 pytestmark = pytest.mark.integration
 
 
+# Mirror scripts/apply_migrations.py order so the schema matches CI/production.
+# The ownership migration adds the NOT NULL teams.owner_user_id column, so it
+# must be applied for direct INSERTs into teams to be valid.
 MIGRATION_DIRS = [
     Path("src/infrastructure/auth/migrations"),
     Path("src/infrastructure/players/migrations"),
     Path("src/infrastructure/team/migrations"),
+    Path("src/infrastructure/matches/migrations"),
     Path("src/infrastructure/video/migrations"),
+    Path("src/infrastructure/clip_collections/migrations"),
+    Path("src/infrastructure/jobs/migrations"),
+    Path("src/infrastructure/ownership/migrations"),
 ]
 
 
@@ -65,10 +72,10 @@ def test_set_thumbnail_key_persists_and_reads_back() -> None:
                 )
                 cur.execute(
                     """
-                    INSERT INTO teams (id, name, short_name, city, country, created_at)
-                    VALUES (%s, %s, %s, %s, %s, %s)
+                    INSERT INTO teams (id, name, short_name, city, country, owner_user_id, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (team_id, "Thumb Team", "TT", "Buenos Aires", "Argentina", now),
+                    (team_id, "Thumb Team", "TT", "Buenos Aires", "Argentina", user_id, now),
                 )
                 cur.execute(
                     """
