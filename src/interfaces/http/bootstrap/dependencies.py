@@ -125,6 +125,7 @@ from src.infrastructure.matches.postgres_repository import PostgresMatchReposito
 from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
 from src.infrastructure.team.postgres_repository import PostgresTeamRepository
 from src.infrastructure.storage import R2Storage
+from src.infrastructure.video.ffmpeg_thumbnail_generator import FFmpegThumbnailGenerator
 from src.infrastructure.video.postgres_video_repository import PostgresVideoRepository
 
 
@@ -404,6 +405,7 @@ def build_http_dependencies(
     )
     team_access = TeamOwnershipAccessAdapter(teams=teams_repo)
     clip_exporter = FFmpegClipExporter(storage=video_storage)
+    thumbnail_generator = FFmpegThumbnailGenerator(storage=video_storage)
     password_hasher = Argon2PasswordHasher()
     token_issuer = JWTTokenIssuer(secret=jwt_secret, issuer=jwt_issuer, audience=jwt_audience)
     refresh_tokens = OpaqueRefreshTokenService(secret=refresh_secret)
@@ -556,6 +558,7 @@ def build_http_dependencies(
             videos=videos_repo,
             storage=video_storage,
             team_access=team_access,
+            thumbnail_generator=thumbnail_generator,
             uow=uow,
         ),
         abort_video_upload_use_case=AbortVideoUploadUseCase(
@@ -569,6 +572,7 @@ def build_http_dependencies(
             videos=videos_repo,
             storage=video_storage,
             team_access=team_access,
+            thumbnail_generator=thumbnail_generator,
         ),
         update_video_use_case=UpdateVideoUseCase(
             videos=videos_repo,

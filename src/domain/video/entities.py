@@ -30,3 +30,4 @@ class Video:
     deleted_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    thumbnail_key: str | None = None

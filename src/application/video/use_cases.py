@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -15,12 +16,19 @@ from src.application.video.errors import (
 from src.application.video.ports import (
     IdGeneratorPort,
     TeamAccessPort,
+    ThumbnailGeneratorPort,
     UnitOfWorkPort,
     VideoRepositoryPort,
     VideoStorageKeyConflictError,
     VideoStoragePort,
 )
 from src.domain.video.entities import Video, VideoStatus
+
+
+def _thumbnail_key(*, team_id: str, video_id: str) -> str:
+    """Deterministic thumbnail object key derived from stable identifiers."""
+
+    return f"thumbnails/{team_id}/{video_id}.jpg"
 
 
 @dataclass(frozen=True)
@@ -124,11 +132,13 @@ class CompleteVideoUploadUseCase:
         videos: VideoRepositoryPort,
         storage: VideoStoragePort,
         team_access: TeamAccessPort,
+        thumbnail_generator: ThumbnailGeneratorPort,
         uow: UnitOfWorkPort,
     ) -> None:
         self._videos = videos
         self._storage = storage
         self._team_access = team_access
+        self._thumbnail_generator = thumbnail_generator
         self._uow = uow
 
     def execute(self, command: CompleteVideoUploadCommand) -> Video:
@@ -154,7 +164,28 @@ class CompleteVideoUploadUseCase:
             )
         if video is None:
             raise VideoError(code=UPLOAD_NOT_INITIALIZED, message="Upload not initialized")
-        return video
+        return self._generate_thumbnail_best_effort(video)
+
+    def _generate_thumbnail_best_effort(self, video: Video) -> Video:
+        """Generates and persists a thumbnail without failing the upload.
+
+        Any generator or persistence error is swallowed: the READY video is
+        returned with ``thumbnail_key`` left null, and a later lazy GET can
+        retry the backfill.
+        """
+
+        thumbnail_key = _thumbnail_key(team_id=video.team_id, video_id=video.id)
+        try:
+            self._thumbnail_generator.generate(source_key=video.storage_key, thumbnail_key=thumbnail_key)
+            with self._uow.transaction():
+                updated = self._videos.set_thumbnail_key(
+                    video_id=video.id,
+                    team_id=video.team_id,
+                    thumbnail_key=thumbnail_key,
+                )
+        except Exception:
+            return video
+        return updated if updated is not None else video
 
 
 class AbortVideoUploadUseCase:
@@ -189,19 +220,53 @@ class ListVideosUseCase:
 
 
 class GetVideoUseCase:
-    def __init__(self, *, videos: VideoRepositoryPort, storage: VideoStoragePort, team_access: TeamAccessPort) -> None:
+    def __init__(
+        self,
+        *,
+        videos: VideoRepositoryPort,
+        storage: VideoStoragePort,
+        team_access: TeamAccessPort,
+        thumbnail_generator: ThumbnailGeneratorPort,
+    ) -> None:
         self._videos = videos
         self._storage = storage
         self._team_access = team_access
+        self._thumbnail_generator = thumbnail_generator
 
-    def execute(self, *, user_id: str, team_id: str, video_id: str) -> tuple[Video, str]:
+    def execute(self, *, user_id: str, team_id: str, video_id: str) -> tuple[Video, str, str | None]:
         self._team_access.assert_access(user_id=user_id, team_id=team_id)
         video = self._videos.get_by_id(video_id=video_id, team_id=team_id)
         if video is None:
             raise VideoError(code=VIDEO_NOT_FOUND, message="Video not found")
         if video.status != VideoStatus.READY:
             raise VideoError(code=VIDEO_NOT_READY, message="Video not ready")
-        return video, self._storage.generate_presigned_url(video.storage_key)
+        if video.thumbnail_key is None:
+            video = self._backfill_thumbnail(video)
+        thumbnail_url = (
+            self._storage.generate_presigned_url(video.thumbnail_key)
+            if video.thumbnail_key is not None
+            else None
+        )
+        return video, self._storage.generate_presigned_url(video.storage_key), thumbnail_url
+
+    def _backfill_thumbnail(self, video: Video) -> Video:
+        """Lazily generates a missing thumbnail; failures are non-fatal.
+
+        Concurrent GETs may duplicate work, but the deterministic key makes the
+        write idempotent and a partial object is never observed by readers.
+        """
+
+        thumbnail_key = _thumbnail_key(team_id=video.team_id, video_id=video.id)
+        try:
+            self._thumbnail_generator.generate(source_key=video.storage_key, thumbnail_key=thumbnail_key)
+            updated = self._videos.set_thumbnail_key(
+                video_id=video.id,
+                team_id=video.team_id,
+                thumbnail_key=thumbnail_key,
+            )
+        except Exception:
+            return video
+        return updated if updated is not None else video
 
 
 class UpdateVideoUseCase:
@@ -250,10 +315,15 @@ class DeleteVideoUseCase:
             raise VideoError(code=VIDEO_NOT_FOUND, message="Video not found")
         try:
             self._storage.delete_video(video.storage_key)
-            return {"deleted": True, "compensation_pending": False}
         except Exception as exc:
             raise VideoError(
                 code=STORAGE_DELETE_FAILED,
                 message="Storage deletion failed",
                 details={"reason": str(exc)},
             ) from exc
+        # Thumbnail cleanup is best-effort: a failure must not resurrect the
+        # deleted source or fail the request. Null keys are skipped.
+        if video.thumbnail_key is not None:
+            with contextlib.suppress(Exception):
+                self._storage.delete_video(video.thumbnail_key)
+        return {"deleted": True, "compensation_pending": False}

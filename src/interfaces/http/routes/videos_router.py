@@ -164,12 +164,16 @@ def create_videos_router(
     @router.get("/{video_id}", response_model=None)
     def get_video(video_id: UUID, team_id: UUID, request: Request):
         try:
-            video, playback_url = get_video_use_case.execute(
+            video, playback_url, thumbnail_url = get_video_use_case.execute(
                 user_id=str(request.state.user_id),
                 team_id=str(team_id),
                 video_id=str(video_id),
             )
-            return {"video": _video_to_dict(video), "presigned_playback_url": playback_url}
+            return {
+                "video": _video_to_dict(video),
+                "presigned_playback_url": playback_url,
+                "presigned_thumbnail_url": thumbnail_url,
+            }
         except VideoError as exc:
             return JSONResponse(status_code=video_error_http_status(exc.code), content=exc.to_envelope())
 

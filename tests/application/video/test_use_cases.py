@@ -141,10 +141,30 @@ class _Repo:
         self.by_id[failed.id] = failed
         return failed
 
+    def set_thumbnail_key(self, *, video_id: str, team_id: str, thumbnail_key: str) -> Video | None:
+        video = self.get_by_id(video_id=video_id, team_id=team_id)
+        if video is None:
+            return None
+        updated = replace(video, thumbnail_key=thumbnail_key)
+        self.by_id[updated.id] = updated
+        return updated
+
+
+class _ThumbnailGenerator:
+    def __init__(self) -> None:
+        self.fail = False
+        self.calls: list[tuple[str, str]] = []
+
+    def generate(self, *, source_key: str, thumbnail_key: str) -> None:
+        self.calls.append((source_key, thumbnail_key))
+        if self.fail:
+            raise RuntimeError("thumbnail generation failed")
+
 
 class _Storage:
     def __init__(self) -> None:
         self.fail_delete = False
+        self.deleted: list[str] = []
 
     def init_multipart_upload(self, *, key: str, content_type: str | None = None) -> str:
         del key, content_type
@@ -181,6 +201,7 @@ class _Storage:
     def delete_video(self, key: str) -> None:
         if self.fail_delete:
             raise RuntimeError(f"delete failed for {key}")
+        self.deleted.append(key)
 
 
 class _TeamAccess:
@@ -277,7 +298,13 @@ class TestVideoUseCases(unittest.TestCase):
         self.assertEqual(ctx.exception.code, VIDEO_STORAGE_KEY_CONFLICT)
 
     def test_complete_without_pending_init_raises_upload_not_initialized(self) -> None:
-        use_case = CompleteVideoUploadUseCase(videos=_Repo(), storage=_Storage(), team_access=_TeamAccess(), uow=_Uow())
+        use_case = CompleteVideoUploadUseCase(
+            videos=_Repo(),
+            storage=_Storage(),
+            team_access=_TeamAccess(),
+            thumbnail_generator=_ThumbnailGenerator(),
+            uow=_Uow(),
+        )
 
         with self.assertRaises(VideoError) as ctx:
             use_case.execute(
@@ -310,7 +337,12 @@ class TestVideoUseCases(unittest.TestCase):
     def test_get_video_requires_ready_status(self) -> None:
         repo = _Repo()
         repo.by_id["v1"] = _video(video_id="v1", team_id="team-1", status=VideoStatus.PENDING_UPLOAD)
-        use_case = GetVideoUseCase(videos=repo, storage=_Storage(), team_access=_TeamAccess())
+        use_case = GetVideoUseCase(
+            videos=repo,
+            storage=_Storage(),
+            team_access=_TeamAccess(),
+            thumbnail_generator=_ThumbnailGenerator(),
+        )
 
         with self.assertRaises(VideoError) as ctx:
             use_case.execute(user_id="u1", team_id="team-1", video_id="v1")
@@ -344,6 +376,166 @@ class TestVideoUseCases(unittest.TestCase):
         with self.assertRaises(VideoError) as ctx:
             use_case.execute(DeleteVideoCommand(user_id="u1", team_id="team-1", video_id="v1"))
         self.assertEqual(ctx.exception.code, STORAGE_DELETE_FAILED)
+
+    def test_complete_upload_generates_and_persists_thumbnail(self) -> None:
+        repo = _Repo()
+        repo.by_id["v1"] = replace(_video(video_id="v1", team_id="team-1"), multipart_upload_id="upload-id-1")
+        generator = _ThumbnailGenerator()
+        use_case = CompleteVideoUploadUseCase(
+            videos=repo,
+            storage=_Storage(),
+            team_access=_TeamAccess(),
+            thumbnail_generator=generator,
+            uow=_Uow(),
+        )
+
+        video = use_case.execute(
+            CompleteVideoUploadCommand(
+                user_id="u1",
+                team_id="team-1",
+                video_id="v1",
+                mime_type="video/mp4",
+                size_bytes=1024,
+                duration_ms=1000,
+                multipart_upload_id="upload-id-1",
+                parts=[{"PartNumber": 1, "ETag": "etag-1"}],
+            )
+        )
+
+        self.assertEqual(video.status, VideoStatus.READY)
+        self.assertEqual(generator.calls, [("videos/team-1/v1", "thumbnails/team-1/v1.jpg")])
+        self.assertEqual(repo.by_id["v1"].thumbnail_key, "thumbnails/team-1/v1.jpg")
+        self.assertEqual(video.thumbnail_key, "thumbnails/team-1/v1.jpg")
+
+    def test_complete_upload_survives_thumbnail_failure(self) -> None:
+        repo = _Repo()
+        repo.by_id["v1"] = replace(_video(video_id="v1", team_id="team-1"), multipart_upload_id="upload-id-1")
+        generator = _ThumbnailGenerator()
+        generator.fail = True
+        use_case = CompleteVideoUploadUseCase(
+            videos=repo,
+            storage=_Storage(),
+            team_access=_TeamAccess(),
+            thumbnail_generator=generator,
+            uow=_Uow(),
+        )
+
+        video = use_case.execute(
+            CompleteVideoUploadCommand(
+                user_id="u1",
+                team_id="team-1",
+                video_id="v1",
+                mime_type="video/mp4",
+                size_bytes=1024,
+                duration_ms=1000,
+                multipart_upload_id="upload-id-1",
+                parts=[{"PartNumber": 1, "ETag": "etag-1"}],
+            )
+        )
+
+        self.assertEqual(video.status, VideoStatus.READY)
+        self.assertIsNone(video.thumbnail_key)
+        self.assertIsNone(repo.by_id["v1"].thumbnail_key)
+
+    def test_get_video_presigns_existing_thumbnail_without_generating(self) -> None:
+        repo = _Repo()
+        repo.by_id["v1"] = replace(
+            _video(video_id="v1", team_id="team-1", status=VideoStatus.READY),
+            thumbnail_key="thumbnails/team-1/v1.jpg",
+        )
+        generator = _ThumbnailGenerator()
+        use_case = GetVideoUseCase(
+            videos=repo,
+            storage=_Storage(),
+            team_access=_TeamAccess(),
+            thumbnail_generator=generator,
+        )
+
+        video, playback_url, thumbnail_url = use_case.execute(user_id="u1", team_id="team-1", video_id="v1")
+
+        self.assertEqual(playback_url, "https://play.local/videos/team-1/v1")
+        self.assertEqual(thumbnail_url, "https://play.local/thumbnails/team-1/v1.jpg")
+        self.assertEqual(generator.calls, [])
+
+    def test_get_video_backfills_missing_thumbnail(self) -> None:
+        repo = _Repo()
+        repo.by_id["v1"] = _video(video_id="v1", team_id="team-1", status=VideoStatus.READY)
+        generator = _ThumbnailGenerator()
+        use_case = GetVideoUseCase(
+            videos=repo,
+            storage=_Storage(),
+            team_access=_TeamAccess(),
+            thumbnail_generator=generator,
+        )
+
+        video, _playback_url, thumbnail_url = use_case.execute(user_id="u1", team_id="team-1", video_id="v1")
+
+        self.assertEqual(thumbnail_url, "https://play.local/thumbnails/team-1/v1.jpg")
+        self.assertEqual(repo.by_id["v1"].thumbnail_key, "thumbnails/team-1/v1.jpg")
+        self.assertEqual(len(generator.calls), 1)
+
+    def test_get_video_returns_null_thumbnail_when_backfill_fails(self) -> None:
+        repo = _Repo()
+        repo.by_id["v1"] = _video(video_id="v1", team_id="team-1", status=VideoStatus.READY)
+        generator = _ThumbnailGenerator()
+        generator.fail = True
+        use_case = GetVideoUseCase(
+            videos=repo,
+            storage=_Storage(),
+            team_access=_TeamAccess(),
+            thumbnail_generator=generator,
+        )
+
+        video, _playback_url, thumbnail_url = use_case.execute(user_id="u1", team_id="team-1", video_id="v1")
+
+        self.assertIsNone(thumbnail_url)
+        self.assertIsNone(video.thumbnail_key)
+
+    def test_delete_removes_source_and_thumbnail(self) -> None:
+        repo = _Repo()
+        repo.by_id["v1"] = replace(
+            _video(video_id="v1", team_id="team-1", status=VideoStatus.READY),
+            thumbnail_key="thumbnails/team-1/v1.jpg",
+        )
+        storage = _Storage()
+        use_case = DeleteVideoUseCase(videos=repo, storage=storage, team_access=_TeamAccess(), uow=_Uow())
+
+        result = use_case.execute(DeleteVideoCommand(user_id="u1", team_id="team-1", video_id="v1"))
+
+        self.assertEqual(result, {"deleted": True, "compensation_pending": False})
+        self.assertEqual(storage.deleted, ["videos/team-1/v1", "thumbnails/team-1/v1.jpg"])
+
+    def test_delete_skips_thumbnail_when_null(self) -> None:
+        repo = _Repo()
+        repo.by_id["v1"] = _video(video_id="v1", team_id="team-1", status=VideoStatus.READY)
+        storage = _Storage()
+        use_case = DeleteVideoUseCase(videos=repo, storage=storage, team_access=_TeamAccess(), uow=_Uow())
+
+        use_case.execute(DeleteVideoCommand(user_id="u1", team_id="team-1", video_id="v1"))
+
+        self.assertEqual(storage.deleted, ["videos/team-1/v1"])
+
+    def test_delete_ignores_thumbnail_delete_failure(self) -> None:
+        repo = _Repo()
+        repo.by_id["v1"] = replace(
+            _video(video_id="v1", team_id="team-1", status=VideoStatus.READY),
+            thumbnail_key="thumbnails/team-1/v1.jpg",
+        )
+        storage = _Storage()
+        original_delete = storage.delete_video
+
+        def _flaky_delete(key: str) -> None:
+            if key.startswith("thumbnails/"):
+                raise RuntimeError("thumbnail delete failed")
+            original_delete(key)
+
+        storage.delete_video = _flaky_delete  # type: ignore[method-assign]
+        use_case = DeleteVideoUseCase(videos=repo, storage=storage, team_access=_TeamAccess(), uow=_Uow())
+
+        result = use_case.execute(DeleteVideoCommand(user_id="u1", team_id="team-1", video_id="v1"))
+
+        self.assertEqual(result, {"deleted": True, "compensation_pending": False})
+        self.assertEqual(storage.deleted, ["videos/team-1/v1"])
 
 
 if __name__ == "__main__":
