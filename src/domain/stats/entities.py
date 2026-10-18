@@ -29,9 +29,20 @@ class ShotTally:
     # scores rather than only where they shoot. Counting attempts alone would
     # make a cold shooter and a hot one look identical.
     by_zone: dict[str, dict[str, int]] = field(default_factory=dict)
+    # Shots whose outcome the pipeline could not determine. They are NOT attempts:
+    # counting an unknown as a miss would drag the percentage down for shots that
+    # may well have gone in, so they are reported beside the totals instead.
+    unresolved_attempts: int = 0
+    unresolved_by_zone: dict[str, int] = field(default_factory=dict)
+    # Made and attempted per shot type (jump_shot, layup, ...), resolved shots only.
+    by_shot_type: dict[str, dict[str, int]] = field(default_factory=dict)
 
-    def add(self, *, made: bool, points: int, zone: str) -> None:
+    def add(self, *, made: bool, points: int, zone: str, shot_type: str | None = None) -> None:
         self.attempted += 1
+        type_tally = self.by_shot_type.setdefault(shot_type or "unknown", {"made": 0, "attempted": 0})
+        type_tally["attempted"] += 1
+        if made:
+            type_tally["made"] += 1
         tally = self.by_zone.setdefault(zone, {"made": 0, "attempted": 0})
         tally["attempted"] += 1
         if made:
@@ -47,6 +58,31 @@ class ShotTally:
             else:
                 self.two_point_made += 1
 
+    def add_unresolved(self, *, zone: str) -> None:
+        self.unresolved_attempts += 1
+        self.unresolved_by_zone[zone] = self.unresolved_by_zone.get(zone, 0) + 1
+
+    def merge(self, other: "ShotTally") -> None:
+        """Fold another tally in, for players the pipeline split in two."""
+
+        self.attempted += other.attempted
+        self.made += other.made
+        self.two_point_attempted += other.two_point_attempted
+        self.two_point_made += other.two_point_made
+        self.three_point_attempted += other.three_point_attempted
+        self.three_point_made += other.three_point_made
+        self.unresolved_attempts += other.unresolved_attempts
+        for zone, tally in other.by_zone.items():
+            bucket = self.by_zone.setdefault(zone, {"made": 0, "attempted": 0})
+            bucket["made"] += tally["made"]
+            bucket["attempted"] += tally["attempted"]
+        for zone, count in other.unresolved_by_zone.items():
+            self.unresolved_by_zone[zone] = self.unresolved_by_zone.get(zone, 0) + count
+        for shot_type, tally in other.by_shot_type.items():
+            bucket = self.by_shot_type.setdefault(shot_type, {"made": 0, "attempted": 0})
+            bucket["made"] += tally["made"]
+            bucket["attempted"] += tally["attempted"]
+
     @property
     def points(self) -> int:
         return self.two_point_made * 2 + self.three_point_made * 3
@@ -54,14 +90,21 @@ class ShotTally:
     def zone_breakdown(self) -> dict[str, dict]:
         """Per-zone shooting, with a percentage where one is meaningful."""
 
-        return {
-            zone: {
+        zones = sorted(set(self.by_zone) | set(self.unresolved_by_zone))
+        breakdown: dict[str, dict] = {}
+        for zone in zones:
+            tally = self.by_zone.get(zone, {"made": 0, "attempted": 0})
+            entry = {
                 "made": tally["made"],
                 "attempted": tally["attempted"],
                 "pct": _pct(tally["made"], tally["attempted"]),
             }
-            for zone, tally in sorted(self.by_zone.items())
-        }
+            # Only present where a shot went unresolved, so clean zones keep the
+            # shape they always had.
+            if self.unresolved_by_zone.get(zone):
+                entry["unresolved_attempts"] = self.unresolved_by_zone[zone]
+            breakdown[zone] = entry
+        return breakdown
 
     def to_dict(self) -> dict:
         return {
@@ -75,7 +118,9 @@ class ShotTally:
             "three_point_made": self.three_point_made,
             "three_point_attempted": self.three_point_attempted,
             "three_point_pct": _pct(self.three_point_made, self.three_point_attempted),
+            "unresolved_attempts": self.unresolved_attempts,
             "by_zone": self.zone_breakdown(),
+            "by_shot_type": {kind: dict(tally) for kind, tally in sorted(self.by_shot_type.items())},
         }
 
 
@@ -110,6 +155,16 @@ class PlayerStats:
     observations: int = 0
     # True for the most-present five per team — the players on court.
     on_court: bool = False
+    # Time on screen and ground covered, from the pipeline's player summary. None
+    # when the job predates it (distance) or the frame rate is unknown (seconds).
+    seconds_observed: float | None = None
+    distance_m: float | None = None
+    # How trustworthy the jersey read is: confirmed / ambiguous / unknown, and how
+    # many sampled frames agreed. `team_agreement` is the share of the player's
+    # rows that sit on their team (1.0 = never flipped sides).
+    jersey_status: str = "unknown"
+    jersey_support_count: int = 0
+    team_agreement: float | None = None
     shooting: ShotTally = field(default_factory=ShotTally)
 
     @property
@@ -130,6 +185,11 @@ class PlayerStats:
             "jersey_number": self.jersey_number,
             "observations": self.observations,
             "on_court": self.on_court,
+            "seconds_observed": self.seconds_observed,
+            "distance_m": self.distance_m,
+            "jersey_status": self.jersey_status,
+            "jersey_support_count": self.jersey_support_count,
+            "team_agreement": self.team_agreement,
             "roster_player_id": self.roster_player_id,
             "roster_name": self.roster_name,
             "display_name": self.display_name,

@@ -77,6 +77,7 @@ from src.application.jobs.use_cases import (
 )
 from src.application.stats.use_cases import (
     GetCourtPositionsUseCase,
+    GetEventsUseCase,
     GetGameStatsUseCase,
     GetShotChartUseCase,
     GetSimilarClipsUseCase,
@@ -285,6 +286,7 @@ class HttpDependencies:
     shot_chart_use_case: GetShotChartUseCase
     team_sides_use_case: GetTeamSidesUseCase
     similar_clips_use_case: GetSimilarClipsUseCase
+    events_use_case: GetEventsUseCase
     processing_callback_token: str
     export_clip_item_use_case: ExportClipItemUseCase
     access_token_resolver: JWTAccessTokenResolver
@@ -658,6 +660,9 @@ def build_http_dependencies(
             jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access, roster=players_repo
         ),
         similar_clips_use_case=GetSimilarClipsUseCase(
+            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
+        ),
+        events_use_case=GetEventsUseCase(
             jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
         ),
         access_token_resolver=access_token_resolver,

@@ -18,7 +18,14 @@ from src.domain.stats.court import COURT_LENGTH_M, COURT_WIDTH_M, describe_shot,
 
 # v2: movement is grouped per real player (stable_player_id) rather than per
 # segmented track, so a bump invalidates features cached under the old grouping.
-FEATURE_VERSION = 2
+# v3: positions are read at 5 Hz (the pipeline's player paths, or the per-frame
+# rows thinned to the same rate), so tempo means metres per 0.2 s and unresolved
+# shots no longer count as attempts; v2 features are recomputed on first use.
+FEATURE_VERSION = 3
+
+# Rate of the pipeline's resampled player paths; the tempo feature is per sample
+# at this rate, whichever file the positions came from.
+PATH_HZ = 5.0
 
 # Court-occupancy grid: length is split into more cells than width because play
 # moves mostly end-to-end. 6 x 3 = 18 cells is coarse enough to be stable under
@@ -51,6 +58,9 @@ def _shot_zone_histogram(shots_document: dict | None) -> tuple[list[float], int,
     for shot in (shots_document or {}).get("shots") or []:
         court_xy = shot.get("shot_origin_court_xy_m")
         if not court_xy or len(court_xy) < 2 or not is_on_court((court_xy[0], court_xy[1])):
+            continue
+        # An unknown outcome is not an attempt (same rule as the box score).
+        if shot.get("outcome") not in ("made", "missed"):
             continue
         location = describe_shot((float(court_xy[0]), float(court_xy[1])))
         if location.zone in counts:
@@ -116,6 +126,60 @@ def _movement_features(position_rows: list[dict]) -> tuple[list[float], float, f
     spread = round(sum(spreads) / len(spreads), 4) if spreads else 0.0
 
     return _normalize(cells), tempo, spread
+
+
+def _tick_step(fps: float) -> float:
+    return max(1.0, fps / PATH_HZ)
+
+
+def rows_from_player_paths(path_rows: list[dict], *, fps: float) -> list[dict]:
+    """Position rows from player_paths.jsonl, ticked so players share a frame key.
+
+    Each path point is the first observation of its 5 Hz tick, so two players in
+    the same tick can carry different frame numbers; `frame_index` becomes the
+    tick, which is what the spread feature groups on.
+    """
+
+    step = _tick_step(fps)
+    rows: list[dict] = []
+    for index, path in enumerate(path_rows):
+        for point in path.get("points") or []:
+            if len(point) < 3:
+                continue
+            rows.append(
+                {
+                    "frame_index": int(point[0] // step),
+                    "track_id": index,
+                    "stable_player_id": path.get("stable_player_id"),
+                    "court_xy_m": [point[1], point[2]],
+                }
+            )
+    return rows
+
+
+def resample_rows(rows: list[dict], *, fps: float) -> list[dict]:
+    """Thin per-frame rows to 5 Hz: the first row per player per tick.
+
+    Keeps legacy jobs comparable with ones that ship 5 Hz paths. Rows without a
+    frame number cannot be placed in a tick and are dropped.
+    """
+
+    step = _tick_step(fps)
+    seen: set[tuple[object, int]] = set()
+    thinned: list[dict] = []
+    for row in rows:
+        frame = row.get("frame_index")
+        if frame is None:
+            continue
+        player = row.get("stable_player_id")
+        if player is None:
+            player = row.get("track_id", row.get("player_id"))
+        tick = int(frame // step)
+        if (player, tick) in seen:
+            continue
+        seen.add((player, tick))
+        thinned.append({**row, "frame_index": tick})
+    return thinned
 
 
 def build_clip_features(*, shots_document: dict | None, position_rows: list[dict]) -> dict:
