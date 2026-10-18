@@ -3,21 +3,36 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace as NS
 
-from src.application.matches.errors import INVALID_MATCH_TEAMS, INVALID_STATS_FILE, STATS_FILE_TOO_LARGE, TEAM_NOT_FOUND, MatchError
+from src.application.matches.errors import (
+    INVALID_MATCH_TEAMS,
+    INVALID_STATS_FILE,
+    STATS_FILE_TOO_LARGE,
+    TEAM_MISMATCH,
+    TEAM_NOT_FOUND,
+    MatchError,
+)
 from src.application.matches.excel_import import (
     BoxScoreFileError,
     PreviewMatchStatsImportUseCase,
     PreviewStatsImportCommand,
 )
 from src.infrastructure.matches.cabb_box_score_parser import MAX_FILE_BYTES, CabbBoxScoreParser
-from tests.box_score_fixtures import as_csv, as_xlsx, grid
+from tests.box_score_fixtures import AWAY_PLAYERS, HOME_PLAYERS, as_csv, as_xlsx, grid
 
 HOME, AWAY = "team-home", "team-away"
 
 
 class _Teams:
+    def __init__(self, home="Club Alfa", away="Club Beta"):
+        self._names = (home, away)
+
     def list_by_owner(self, *, owner_user_id):
-        return [NS(id=HOME, name="Club Alfa"), NS(id=AWAY, name="Club Beta")]
+        return [NS(id=HOME, name=self._names[0]), NS(id=AWAY, name=self._names[1])]
+
+
+class _NoRoster:
+    def list_by_owner_and_team(self, *, owner_user_id, team_id):
+        return []
 
 
 class _Players:
@@ -115,19 +130,83 @@ class TestPreviewUseCase(unittest.TestCase):
         self.assertIsNone(_use_case().execute(command(grid(home_points=9, away_points=9))).winner_team_id)
 
     def test_swapped_team_order_in_the_file_is_corrected(self) -> None:
-        rows = grid(title="Estadísticas - Club Beta vs Club Alfa - X", home_name="Club Beta", away_name="Club Alfa")
+        rows = grid(
+            title="Estadísticas - Club Beta vs Club Alfa - X",
+            home_name="Club Beta",
+            away_name="Club Alfa",
+            home_players=AWAY_PLAYERS,
+            away_players=HOME_PLAYERS,
+        )
         preview = _use_case().execute(
             PreviewStatsImportCommand(user_id="u", data=as_xlsx(rows), home_team_id=HOME, away_team_id=AWAY)
         )
         self.assertEqual(preview.stats["teams"]["HOME"]["name"], "Club Alfa")
         self.assertEqual(preview.stats["teams"]["AWAY"]["name"], "Club Beta")
 
-    def test_mismatched_team_names_warn_but_still_produce_a_draft(self) -> None:
+    def test_abbreviated_team_names_are_accepted(self) -> None:
+        rows = grid(title="Estadísticas - Bos. Celtics vs Brk Nets - X", home_name="Bos. Celtics", away_name="Brk. Nets")
+        use_case = PreviewMatchStatsImportUseCase(
+            parser=CabbBoxScoreParser(), teams=_Teams("Boston Celtics", "Brooklyn Nets"), players=_NoRoster()
+        )
+        preview = use_case.execute(
+            PreviewStatsImportCommand(user_id="u", data=as_xlsx(rows), home_team_id=HOME, away_team_id=AWAY)
+        )
+        checks = {t["side"]: t for t in preview.report["teams"]}
+        self.assertTrue(checks["HOME"]["matches_selected_team"])
+        self.assertEqual(checks["HOME"]["name_score"], 1.0)
+        self.assertIsNone(checks["HOME"]["roster_score"])
+        self.assertFalse(any("does not look like" in w for w in preview.report["warnings"]))
+
+    def test_a_different_team_name_is_accepted_when_the_roster_is_the_same(self) -> None:
         rows = grid(home_name="Otro Club", away_name="Tercer Club")
         preview = _use_case().execute(
             PreviewStatsImportCommand(user_id="u", data=as_xlsx(rows), home_team_id=HOME, away_team_id=AWAY)
         )
-        self.assertTrue(any("do not match" in w for w in preview.report["warnings"]))
+        home = next(t for t in preview.report["teams"] if t["side"] == "HOME")
+        self.assertEqual(home["name_score"], 0.0)
+        self.assertEqual(home["roster_score"], 1.0)
+        self.assertTrue(home["matches_selected_team"])
+
+    def test_a_clearly_different_team_is_refused_with_details(self) -> None:
+        use_case = PreviewMatchStatsImportUseCase(
+            parser=CabbBoxScoreParser(), teams=_Teams("Zeta Squad", "Omega Five"), players=_NoRoster()
+        )
+        with self.assertRaises(MatchError) as caught:
+            use_case.execute(
+                PreviewStatsImportCommand(user_id="u", data=as_xlsx(grid()), home_team_id=HOME, away_team_id=AWAY)
+            )
+        error = caught.exception
+        self.assertEqual(error.code, TEAM_MISMATCH)
+        self.assertEqual({t["side"] for t in error.details["teams"]}, {"HOME", "AWAY"})
+        self.assertEqual(error.details["teams"][0]["name_in_file"], "Club Alfa")
+
+    def test_the_mismatch_can_be_allowed_explicitly(self) -> None:
+        use_case = PreviewMatchStatsImportUseCase(
+            parser=CabbBoxScoreParser(), teams=_Teams("Zeta Squad", "Omega Five"), players=_NoRoster()
+        )
+        preview = use_case.execute(
+            PreviewStatsImportCommand(
+                user_id="u",
+                data=as_xlsx(grid()),
+                home_team_id=HOME,
+                away_team_id=AWAY,
+                allow_team_mismatch=True,
+            )
+        )
+        self.assertEqual(len(preview.participants), 4)
+        self.assertEqual(sum("does not look like" in w for w in preview.report["warnings"]), 2)
+
+    def test_only_one_selected_team_is_checked_and_the_other_side_is_inferred(self) -> None:
+        rows = grid(
+            title="Estadísticas - Club Beta vs Club Alfa - X",
+            home_name="Club Beta",
+            away_name="Club Alfa",
+            home_players=AWAY_PLAYERS,
+            away_players=HOME_PLAYERS,
+        )
+        preview = _use_case().execute(PreviewStatsImportCommand(user_id="u", data=as_xlsx(rows), home_team_id=HOME))
+        self.assertEqual(preview.stats["teams"]["HOME"]["name"], "Club Alfa")
+        self.assertEqual(preview.stats["teams"]["AWAY"]["name"], "Club Beta")
 
     def test_inconsistent_points_are_reported(self) -> None:
         preview = _use_case().execute(

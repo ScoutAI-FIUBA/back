@@ -174,6 +174,7 @@ def create_matches_router(
             file: UploadFile = File(...),
             home_team_id: UUID | None = Form(default=None),
             away_team_id: UUID | None = Form(default=None),
+            allow_team_mismatch: bool = Form(default=False),
         ):
             """Reads a federation .xlsx box score and returns a draft; nothing is saved."""
 
@@ -185,6 +186,7 @@ def create_matches_router(
                         data=data,
                         home_team_id=str(home_team_id) if home_team_id is not None else None,
                         away_team_id=str(away_team_id) if away_team_id is not None else None,
+                        allow_team_mismatch=allow_team_mismatch,
                     )
                 )
                 return {

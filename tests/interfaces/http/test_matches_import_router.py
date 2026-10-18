@@ -17,8 +17,11 @@ XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 class _Teams:
+    def __init__(self, home="Club Alfa", away="Club Beta"):
+        self._names = (home, away)
+
     def list_by_owner(self, *, owner_user_id):
-        return [NS(id=HOME, name="Club Alfa"), NS(id=AWAY, name="Club Beta")]
+        return [NS(id=HOME, name=self._names[0]), NS(id=AWAY, name=self._names[1])]
 
 
 class _Players:
@@ -26,7 +29,7 @@ class _Players:
         return [NS(id="p4", first_name="Uno", last_name="Alfa", jersey_number="4")] if team_id == HOME else []
 
 
-def _client(*, with_import: bool = True) -> TestClient:
+def _client(*, with_import: bool = True, teams=None) -> TestClient:
     unused = NS()
     app = FastAPI()
 
@@ -43,7 +46,7 @@ def _client(*, with_import: bool = True) -> TestClient:
             replace_match_stats_use_case=unused,
             get_match_stats_use_case=unused,
             preview_stats_import_use_case=(
-                PreviewMatchStatsImportUseCase(parser=CabbBoxScoreParser(), teams=_Teams(), players=_Players())
+                PreviewMatchStatsImportUseCase(parser=CabbBoxScoreParser(), teams=teams or _Teams(), players=_Players())
                 if with_import
                 else None
             ),
@@ -98,6 +101,28 @@ class TestImportPreviewEndpoint(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404)
         self.assertEqual(client.post("/matches/stats/import-preview").status_code, 422)
+
+    def test_a_different_team_is_422_unless_the_mismatch_is_allowed(self) -> None:
+        # HOME still matches through its roster (jersey 4, surname Alfa); AWAY has neither name nor roster.
+        client = _client(teams=_Teams("Zeta Squad", "Omega Five"))
+        response = client.post(
+            "/matches/stats/import-preview",
+            files={"file": ("s.xlsx", as_xlsx(grid()), XLSX)},
+            data={"home_team_id": HOME, "away_team_id": AWAY},
+        )
+        self.assertEqual(response.status_code, 422)
+        error = response.json()["error"]
+        self.assertEqual(error["code"], "TEAM_MISMATCH")
+        self.assertEqual([t["side"] for t in error["details"]["teams"]], ["AWAY"])
+        self.assertEqual(error["details"]["teams"][0]["name_in_file"], "Club Beta")
+
+        allowed = client.post(
+            "/matches/stats/import-preview",
+            files={"file": ("s.xlsx", as_xlsx(grid()), XLSX)},
+            data={"home_team_id": HOME, "away_team_id": AWAY, "allow_team_mismatch": "true"},
+        )
+        self.assertEqual(allowed.status_code, 200)
+        self.assertTrue(any("does not look like" in w for w in allowed.json()["report"]["warnings"]))
 
     def test_route_is_absent_when_the_use_case_is_not_wired(self) -> None:
         response = _client(with_import=False).post(

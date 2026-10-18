@@ -36,13 +36,15 @@ AWAY_PLAYERS = [
 ]
 
 
-def grid(*, home_points=13, away_points=9, title="Estadísticas - Club Alfa vs Club Beta - LIGA TEST - 2026", home_name="Club Alfa", away_name="Club Beta"):
+def grid(*, home_points=13, away_points=9, home_players=None, away_players=None, title="Estadísticas - Club Alfa vs Club Beta - LIGA TEST - 2026", home_name="Club Alfa", away_name="Club Beta"):
     rows: list[list[str]] = [[] for _ in range(5)]
     rows.append([title])
     rows.extend([[] for _ in range(4)])
     rows.append(["TOTALES"])
     rows.append([])
-    for name, players, pts in ((home_name, HOME_PLAYERS, home_points), (away_name, AWAY_PLAYERS, away_points)):
+    first_players = HOME_PLAYERS if home_players is None else home_players
+    second_players = AWAY_PLAYERS if away_players is None else away_players
+    for name, players, pts in ((home_name, first_players, home_points), (away_name, second_players, away_points)):
         rows.append([name])
         group = [""] * 22
         for column, label in GROUP_ROW.items():

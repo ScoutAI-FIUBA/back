@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import re
-import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -10,12 +8,14 @@ from src.application.matches.errors import (
     INVALID_MATCH_TEAMS,
     INVALID_STATS_FILE,
     STATS_FILE_TOO_LARGE,
+    TEAM_MISMATCH,
     TEAM_NOT_FOUND,
     MatchError,
 )
 from src.application.players.ports import PlayerRepositoryPort
 from src.application.team.ports import TeamRepositoryPort
 from src.domain.matches.box_score import BoxScoreLine, BoxScorePlayer, BoxScoreTeam, ParsedBoxScore
+from src.domain.matches.team_matching import name_similarity, roster_similarity, same_team
 
 
 class BoxScoreFileError(Exception):
@@ -36,6 +36,7 @@ class PreviewStatsImportCommand:
     data: bytes
     home_team_id: str | None = None
     away_team_id: str | None = None
+    allow_team_mismatch: bool = False
 
 
 @dataclass(frozen=True)
@@ -46,17 +47,6 @@ class StatsImportPreview:
     participants: list[dict[str, Any]]
     stats: dict[str, Any]
     report: dict[str, Any] = field(default_factory=dict)
-
-
-def _normalise(name: str) -> str:
-    text = unicodedata.normalize("NFKD", name)
-    text = "".join(ch for ch in text if not unicodedata.combining(ch))
-    return re.sub(r"[^a-z0-9]", "", text.lower())
-
-
-def _names_match(left: str, right: str) -> bool:
-    a, b = _normalise(left), _normalise(right)
-    return bool(a) and bool(b) and (a == b or a in b or b in a)
 
 
 def _shooting(made: int, attempted: int) -> dict[str, Any]:
@@ -131,7 +121,17 @@ class PreviewMatchStatsImportUseCase:
             if team_id is not None and team_id not in owned:
                 raise MatchError(code=TEAM_NOT_FOUND, message="Team not found")
 
-        blocks = self._assign_sides(score, selected, owned, warnings)
+        rosters = {
+            side: (
+                self._players.list_by_owner_and_team(owner_user_id=command.user_id, team_id=team_id)
+                if team_id is not None
+                else []
+            )
+            for side, team_id in selected.items()
+        }
+        blocks, checks = self._assign_sides(
+            score, selected, owned, rosters, allow_mismatch=command.allow_team_mismatch, warnings=warnings
+        )
 
         participants: list[dict[str, Any]] = []
         player_rows: list[dict[str, Any]] = []
@@ -143,7 +143,7 @@ class PreviewMatchStatsImportUseCase:
         for side in ("HOME", "AWAY"):
             block = blocks[side]
             team_id = selected[side]
-            roster = self._roster_by_jersey(command.user_id, team_id)
+            roster = self._roster_by_jersey(rosters[side])
             seen_numbers: set[str] = set()
             played_points = 0
             for player in block.players:
@@ -193,6 +193,9 @@ class PreviewMatchStatsImportUseCase:
                     "excel_name": block.name,
                     "team_id": team_id,
                     "team_name": owned[team_id].name if team_id is not None else None,
+                    "name_score": checks[side]["name_score"],
+                    "roster_score": checks[side]["roster_score"],
+                    "matches_selected_team": checks[side]["matches"],
                     "players_in_file": len(block.players),
                     "players_who_played": sum(1 for p in block.players if p.played),
                 }
@@ -228,28 +231,73 @@ class PreviewMatchStatsImportUseCase:
         score: ParsedBoxScore,
         selected: dict[str, str | None],
         owned: dict[str, Any],
+        rosters: dict[str, list[Any]],
+        *,
+        allow_mismatch: bool,
         warnings: list[str],
-    ) -> dict[str, BoxScoreTeam]:
-        first, second = score.teams
-        if selected["HOME"] is None or selected["AWAY"] is None:
-            return {"HOME": first, "AWAY": second}
-        home_name, away_name = owned[selected["HOME"]].name, owned[selected["AWAY"]].name
-        straight = _names_match(first.name, home_name) and _names_match(second.name, away_name)
-        swapped = _names_match(first.name, away_name) and _names_match(second.name, home_name)
-        if swapped and not straight:
-            return {"HOME": second, "AWAY": first}
-        if not straight:
-            warnings.append(
-                f"The team names in the file ({first.name} / {second.name}) do not match the selected teams "
-                f"({home_name} / {away_name}); the file order was used as home / away."
-            )
-        return {"HOME": first, "AWAY": second}
+    ) -> tuple[dict[str, BoxScoreTeam], dict[str, dict[str, Any]]]:
+        """Decides which table is HOME and which is AWAY and checks them against the selected teams.
 
-    def _roster_by_jersey(self, user_id: str, team_id: str | None) -> dict[str, list[Any]]:
+        A table belongs to a team when the names are alike (abbreviations and punctuation
+        tolerated) or the players are (same jersey number and surname). Either is enough.
+        """
+
+        first, second = score.teams
+
+        def check(block: BoxScoreTeam, side: str) -> dict[str, Any]:
+            team_id = selected[side]
+            if team_id is None:
+                return {"name_score": None, "roster_score": None, "matches": None, "combined": 0.0}
+            name_score = round(name_similarity(block.name, owned[team_id].name), 2)
+            roster_score = roster_similarity(
+                [(p.jersey_number, p.name) for p in block.players],
+                [(p.jersey_number, p.last_name) for p in rosters[side]],
+            )
+            roster_score = round(roster_score, 2) if roster_score is not None else None
+            return {
+                "name_score": name_score,
+                "roster_score": roster_score,
+                "matches": same_team(name_score, roster_score),
+                "combined": max(name_score, roster_score or 0.0),
+            }
+
+        straight = {"HOME": check(first, "HOME"), "AWAY": check(second, "AWAY")}
+        swapped = {"HOME": check(second, "HOME"), "AWAY": check(first, "AWAY")}
+        use_swapped = sum(c["combined"] for c in swapped.values()) > sum(c["combined"] for c in straight.values())
+        blocks = {"HOME": second, "AWAY": first} if use_swapped else {"HOME": first, "AWAY": second}
+        checks = swapped if use_swapped else straight
+
+        bad = [side for side in ("HOME", "AWAY") if checks[side]["matches"] is False]
+        if bad:
+            details = {
+                "teams": [
+                    {
+                        "side": side,
+                        "selected_team": owned[selected[side]].name,
+                        "name_in_file": blocks[side].name,
+                        "name_score": checks[side]["name_score"],
+                        "roster_score": checks[side]["roster_score"],
+                    }
+                    for side in bad
+                ]
+            }
+            if not allow_mismatch:
+                raise MatchError(
+                    code=TEAM_MISMATCH,
+                    message="The team in the file does not look like the selected team.",
+                    details=details,
+                )
+            for entry in details["teams"]:
+                warnings.append(
+                    f"The file's team {entry['name_in_file']!r} does not look like {entry['selected_team']!r} "
+                    "(accepted because the mismatch was allowed)."
+                )
+        return blocks, checks
+
+    @staticmethod
+    def _roster_by_jersey(roster_players: list[Any]) -> dict[str, list[Any]]:
         roster: dict[str, list[Any]] = {}
-        if team_id is None:
-            return roster
-        for player in self._players.list_by_owner_and_team(owner_user_id=user_id, team_id=team_id):
+        for player in roster_players:
             if player.jersey_number:
                 roster.setdefault(player.jersey_number, []).append(player)
         return roster
