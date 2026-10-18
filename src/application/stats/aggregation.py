@@ -12,12 +12,21 @@ rule here is testable against a fixture.
 from __future__ import annotations
 
 from src.domain.stats.court import court_reference, describe_shot, is_on_court
-from src.domain.stats.entities import GameStats, PlayerStats, TeamStats
+from src.domain.stats.entities import GameStats, PlayerStats, ShotTally, TeamStats
 
-# Outcomes the pipeline reports for a shot. Anything else (notably "unknown")
-# still counts as an attempt but never as a make.
+# Outcomes the pipeline reports for a shot. Anything else (notably "unknown",
+# which also covers a ball that went toward the basket but was never confirmed
+# and a clip that ended mid-shot) is UNRESOLVED: it is neither a make nor a miss,
+# so it is kept out of attempts and percentages and reported on its own.
 MADE = "made"
 MISSED = "missed"
+UNRESOLVED = "unresolved"
+
+# Box-score lines this service cannot produce from shot and tracking data alone.
+NOT_MEASURED = [
+    "rebounds", "assists", "turnovers", "steals", "blocks", "passes", "possessions",
+    "free_throws", "fouls", "minutes",
+]
 
 
 def _coerce_track_id(value) -> int | None:
@@ -25,6 +34,17 @@ def _coerce_track_id(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def outcome_bucket(shot: dict) -> str:
+    """made / missed / unresolved, from the raw pipeline outcome."""
+
+    outcome = shot.get("outcome")
+    if outcome == MADE:
+        return MADE
+    if outcome == MISSED:
+        return MISSED
+    return UNRESOLVED
 
 
 def team_by_track(teams_document: dict | None) -> dict[int, int]:
@@ -107,6 +127,57 @@ def number_by_stable(numbers_document: dict | None) -> dict[str, str]:
     return mapping
 
 
+def _valid_number(number) -> bool:
+    return number not in (None, "", "unknown")
+
+
+def jersey_reads(numbers_document: dict | None) -> tuple[dict[str, dict], dict[int, dict]]:
+    """`(by stable_player_id, by track_id)` -> {status, support_count}, any status.
+
+    `number_by_*` keep only confirmed numbers; this keeps how sure the read was,
+    so a client can tell "no number seen" from "two candidates disagreed".
+    """
+
+    by_stable: dict[str, dict] = {}
+    by_track: dict[int, dict] = {}
+    for player in (numbers_document or {}).get("players") or []:
+        if player.get("stable_player_id") is not None:
+            by_stable[str(player["stable_player_id"])] = {
+                "status": player.get("status") or "unknown",
+                "support_count": int(player.get("support_count") or 0),
+            }
+    for track in (numbers_document or {}).get("tracks") or []:
+        track_id = _coerce_track_id(track.get("track_id"))
+        if track_id is not None:
+            by_track[track_id] = {
+                "status": track.get("status") or "unknown",
+                "support_count": int(track.get("support_count") or 0),
+            }
+    return by_stable, by_track
+
+
+def summary_players_by_stable(summary_document: dict | None) -> dict[str, dict]:
+    """`stable_player_id -> player entry` from the pipeline's player_summary.json."""
+
+    mapping: dict[str, dict] = {}
+    for entry in (summary_document or {}).get("players") or []:
+        if isinstance(entry, dict) and entry.get("stable_player_id") is not None:
+            mapping[str(entry["stable_player_id"])] = entry
+    return mapping
+
+
+def track_to_stable_from_summary(summary_players: dict[str, dict]) -> dict[int, str]:
+    """`raw track_id -> stable_player_id`, from each player's listed track ids."""
+
+    mapping: dict[int, str] = {}
+    for stable_id, entry in summary_players.items():
+        for raw in entry.get("track_ids") or []:
+            track_id = _coerce_track_id(raw)
+            if track_id is not None:
+                mapping[track_id] = stable_id
+    return mapping
+
+
 def _link_roster(
     player: PlayerStats, *, roster: dict[str, dict] | None, our_team_side: int | None
 ) -> None:
@@ -137,6 +208,11 @@ def build_game_stats(
     stable_to_track: dict[str, int] | None = None,
     track_to_stable: dict[int, str] | None = None,
     observations_by_stable: dict[str, int] | None = None,
+    summary_players: dict[str, dict] | None = None,
+    ball_summary: dict | None = None,
+    positions_source: str | None = None,
+    positions_truncated: bool = False,
+    fps: float | None = None,
 ) -> GameStats:
     """Assemble the box score for one processed video.
 
@@ -148,22 +224,37 @@ def build_game_stats(
     same-number fragments are then merged, and `observations_by_stable` (frames
     per player) picks the five most-present per team as the ten on court. Without
     `track_to_stable` (v1), grouping stays per `track_id` exactly as before.
+
+    `summary_players` (stable id -> entry of player_summary.json) is the newer,
+    complete source for the same facts plus time on screen, distance and jersey
+    evidence; when given it supplies the player list, ids and observations.
     """
 
     teams_of = team_by_track(teams_document)
     numbers_of = number_by_track(numbers_document, stable_to_track=stable_to_track)
     numbers_stable = number_by_stable(numbers_document)
-    track_to_stable = track_to_stable or {}
+    reads_stable, reads_track = jersey_reads(numbers_document)
+    summary_players = summary_players or {}
+    track_to_stable = dict(track_to_stable or {})
+    if summary_players:
+        for track_id, stable_id in track_to_stable_from_summary(summary_players).items():
+            track_to_stable.setdefault(track_id, stable_id)
     observations_by_stable = observations_by_stable or {}
 
-    def identity(track_id: int):
-        stable_id = track_to_stable.get(track_id)
+    def identity(track_id: int | None, stable_id: str | None = None):
+        if stable_id is None and track_id is not None:
+            stable_id = track_to_stable.get(track_id)
         return (stable_id, stable_id) if stable_id is not None else (track_id, None)
 
-    def jersey_for(track_id: int, stable_id: str | None) -> str | None:
+    def jersey_for(track_id: int | None, stable_id: str | None) -> str | None:
         if stable_id is not None:
-            return numbers_stable.get(stable_id)
-        return numbers_of.get(track_id)
+            number = numbers_stable.get(stable_id)
+            if number is None:
+                jersey = (summary_players.get(stable_id) or {}).get("jersey") or {}
+                if jersey.get("status") == "confirmed" and _valid_number(jersey.get("number")):
+                    number = str(jersey["number"])
+            return number
+        return numbers_of.get(track_id) if track_id is not None else None
 
     players: dict = {}
     teams: dict[int, TeamStats] = {}
@@ -172,17 +263,42 @@ def build_game_stats(
     raw_shots = (shots_document or {}).get("shots") or []
     unattributed = 0
     unprojected = 0
+    outcomes = {MADE: 0, MISSED: 0, UNRESOLVED: 0}
+    unresolved_scored = 0
+    needing_review = 0
 
-    def player_for(track_id: int, team_id: int | None) -> PlayerStats:
-        key, stable_id = identity(track_id)
+    def player_for(track_id: int | None, team_id: int | None, stable_id: str | None = None):
+        key, stable_id = identity(track_id, stable_id)
         player = players.get(key)
         if player is None:
+            info = summary_players.get(stable_id) if stable_id else None
+            info = info or {}
+            if team_id is None:
+                team_id = info.get("team_id")
+            if track_id is None:
+                listed = info.get("track_ids") or []
+                track_id = _coerce_track_id(listed[0]) if listed else None
+            observations = info.get("frames_observed")
+            if observations is None:
+                observations = observations_by_stable.get(stable_id, 0) if stable_id else 0
+            seconds = info.get("seconds_observed")
+            if seconds is None and fps and observations:
+                seconds = round(observations / fps, 2)
+            read = (reads_stable.get(stable_id) if stable_id else reads_track.get(track_id)) or {}
+            jersey = info.get("jersey") or {}
             player = PlayerStats(
-                track_id=track_id,
+                track_id=-1 if track_id is None else track_id,
                 stable_player_id=stable_id,
                 team_id=None if team_id is None else int(team_id),
                 jersey_number=jersey_for(track_id, stable_id),
-                observations=observations_by_stable.get(stable_id, 0) if stable_id else 0,
+                observations=int(observations or 0),
+                seconds_observed=seconds,
+                distance_m=info.get("distance_m"),
+                jersey_status=jersey.get("status") or read.get("status") or "unknown",
+                jersey_support_count=int(
+                    jersey.get("support_count") or read.get("support_count") or 0
+                ),
+                team_agreement=info.get("team_agreement"),
             )
             players[key] = player
         elif player.team_id is None and team_id is not None:
@@ -191,7 +307,9 @@ def build_game_stats(
 
     for shot in raw_shots:
         court_xy = shot.get("shot_origin_court_xy_m")
-        made = shot.get("outcome") == MADE
+        bucket = outcome_bucket(shot)
+        outcomes[bucket] += 1
+        made = bucket == MADE
 
         # A shot the homography could not place cannot be scored, because its
         # point value depends on where it was taken from.
@@ -200,23 +318,46 @@ def build_game_stats(
             continue
 
         location = describe_shot((float(court_xy[0]), float(court_xy[1])))
-        track_id = shot.get("shooter_track_id")
+        track_id = _coerce_track_id(shot.get("shooter_track_id"))
+        # The pipeline names the stable shooter directly; the track map is only
+        # the fallback for jobs that predate that field.
+        stable_id = shot.get("shooter_stable_player_id")
+        stable_id = None if stable_id is None else str(stable_id)
+        if stable_id is None and track_id is not None:
+            stable_id = track_to_stable.get(track_id)
         team_id = shot.get("shooter_team_id")
         if team_id is None and track_id is not None:
-            team_id = teams_of.get(int(track_id))
+            team_id = teams_of.get(track_id)
+        if team_id is None and stable_id is not None:
+            team_id = (summary_players.get(stable_id) or {}).get("team_id")
 
-        stable_id = None
-        if track_id is None:
+        def record(tally: ShotTally) -> None:
+            if bucket == UNRESOLVED:
+                tally.add_unresolved(zone=location.zone)
+            else:
+                tally.add(
+                    made=made,
+                    points=location.points,
+                    zone=location.zone,
+                    shot_type=shot.get("shot_type"),
+                )
+
+        if track_id is None and stable_id is None:
             unattributed += 1
         else:
-            track_id = int(track_id)
-            player = player_for(track_id, team_id)
+            player = player_for(track_id, team_id, stable_id)
             stable_id = player.stable_player_id
-            player.shooting.add(made=made, points=location.points, zone=location.zone)
+            record(player.shooting)
 
+        # A shot with a team but no shooter still counts for the team.
         if team_id is not None:
             team = teams.setdefault(int(team_id), TeamStats(team_id=int(team_id)))
-            team.shooting.add(made=made, points=location.points, zone=location.zone)
+            record(team.shooting)
+
+        if bucket == UNRESOLVED:
+            unresolved_scored += 1
+        if shot.get("needs_review") is True:
+            needing_review += 1
 
         shot_rows.append(
             {
@@ -224,30 +365,59 @@ def build_game_stats(
                 "track_id": track_id,
                 "stable_player_id": stable_id,
                 "team_id": None if team_id is None else int(team_id),
-                "jersey_number": None if track_id is None else jersey_for(track_id, stable_id),
+                "jersey_number": jersey_for(track_id, stable_id),
                 "made": made,
                 # The raw outcome is kept so a shot chart can tell a miss (draw
                 # red) from an undetermined result (draw neither), which the
                 # made boolean alone collapses together.
                 "outcome": shot.get("outcome"),
+                # "detected" / "inferred" (a make read from the ball's path past
+                # the rim) / "timeout" / "unresolved"; an inferred make is counted
+                # as made, and this is how a client can still mark it.
+                "outcome_confidence": shot.get("outcome_confidence"),
+                "outcome_source": shot.get("outcome_source"),
                 "points": location.points,
                 "zone": location.zone,
                 "distance_m": location.distance_m,
                 "court_x_m": round(float(court_xy[0]), 2),
                 "court_y_m": round(float(court_xy[1]), 2),
                 "timestamp_seconds": shot.get("start_timestamp_seconds"),
+                "release_timestamp_seconds": shot.get("release_timestamp_seconds"),
+                "resolved_timestamp_seconds": shot.get("resolved_timestamp_seconds"),
                 "shot_type": shot.get("shot_type"),
                 # How the shooter was chosen. "nearest_player_bbox_to_shot_anchor"
                 # is a proximity guess, so a client may want to flag it.
                 "attribution": shot.get("shooter_attribution_method"),
+                "shooter_candidates": shot.get("shooter_candidates") or [],
+                # The pipeline's own verdict that a person should check this shot.
+                "needs_review": shot.get("needs_review"),
             }
         )
 
     # Every tracked player appears, not only those who shot, so the interface can
     # list a full squad rather than only scorers.
-    for track_id, team_id in sorted(teams_of.items()):
-        player_for(track_id, team_id)
-        teams.setdefault(team_id, TeamStats(team_id=team_id))
+    if summary_players:
+        for stable_id, info in sorted(summary_players.items()):
+            player = player_for(None, info.get("team_id"), stable_id)
+            if player.team_id is None:
+                # No dominant team in the summary: fall back to the side most of
+                # this player's tracks were assigned to.
+                votes: dict[int, int] = {}
+                for raw in info.get("track_ids") or []:
+                    side = teams_of.get(_coerce_track_id(raw))
+                    if side is not None:
+                        votes[side] = votes.get(side, 0) + 1
+                if votes:
+                    player.team_id = max(votes, key=votes.get)
+        for team_id in sorted(set(teams_of.values())):
+            teams.setdefault(team_id, TeamStats(team_id=team_id))
+        for player in players.values():
+            if player.team_id is not None:
+                teams.setdefault(player.team_id, TeamStats(team_id=player.team_id))
+    else:
+        for track_id, team_id in sorted(teams_of.items()):
+            player_for(track_id, team_id)
+            teams.setdefault(team_id, TeamStats(team_id=team_id))
 
     # v2 fragments one player into several stable ids that still read the same
     # number; merge those on (team, confirmed number) so a player is counted once.
@@ -292,6 +462,15 @@ def build_game_stats(
         players.values(),
         key=lambda p: (not p.on_court, p.team_id if p.team_id is not None else 99, -p.observations),
     )
+    ball_frames = (ball_summary or {}).get("frames") or 0
+    ball_visibility = (
+        round(100.0 * (ball_summary or {}).get("detected_frames", 0) / ball_frames, 1)
+        if ball_frames > 0
+        else None
+    )
+    measures = ["shooting"]
+    if summary_players:
+        measures += ["seconds_observed", "distance"]
     return GameStats(
         teams=[teams[key] for key in sorted(teams)],
         players=ordered,
@@ -301,6 +480,11 @@ def build_game_stats(
             "shots_scored": len(shot_rows),
             "shots_without_court_position": unprojected,
             "shots_without_shooter": unattributed,
+            # Outcomes over every detected shot; `unresolved_attempts` counts only
+            # the located ones, i.e. the ones the per-player tallies could place.
+            "shots_by_outcome": dict(outcomes),
+            "unresolved_attempts": unresolved_scored,
+            "shots_needing_review": needing_review,
             "players_tracked": len(players),
             # The five most-present players per team: the ten actually on court,
             # versus refs/bench/fragments that also get tracked.
@@ -310,9 +494,16 @@ def build_game_stats(
             "players_with_jersey_number": identified,
             # How many tracks were tied to a real roster player (own team only).
             "players_linked_to_roster": linked_count,
+            # Where players and time on screen came from, and whether that source
+            # was cut short (only the legacy per-frame file has a row cap).
+            "positions_source": positions_source,
+            "positions_truncated": bool(positions_truncated),
+            # Share of frames where the ball was detected: low values mean made
+            # and missed shots are being guessed from little evidence.
+            "ball_visibility_pct": ball_visibility,
             # Stated plainly so the interface never implies a complete stat line.
-            "measures": ["shooting"],
-            "not_measured": ["rebounds", "assists", "turnovers", "steals", "fouls", "minutes"],
+            "measures": measures,
+            "not_measured": list(NOT_MEASURED),
         },
     )
 
@@ -345,16 +536,12 @@ def _merge_number_fragments(players: dict) -> tuple[dict, dict]:
         remap[key] = primary_key
         primary = merged[primary_key]
         primary.observations += player.observations
-        primary.shooting.attempted += player.shooting.attempted
-        primary.shooting.made += player.shooting.made
-        primary.shooting.two_point_attempted += player.shooting.two_point_attempted
-        primary.shooting.two_point_made += player.shooting.two_point_made
-        primary.shooting.three_point_attempted += player.shooting.three_point_attempted
-        primary.shooting.three_point_made += player.shooting.three_point_made
-        for zone, tally in player.shooting.by_zone.items():
-            bucket = primary.shooting.by_zone.setdefault(zone, {"made": 0, "attempted": 0})
-            bucket["made"] += tally["made"]
-            bucket["attempted"] += tally["attempted"]
+        if player.seconds_observed is not None:
+            primary.seconds_observed = round((primary.seconds_observed or 0.0) + player.seconds_observed, 2)
+        if player.distance_m is not None:
+            primary.distance_m = round((primary.distance_m or 0.0) + player.distance_m, 2)
+        primary.jersey_support_count += player.jersey_support_count
+        primary.shooting.merge(player.shooting)
     return merged, remap
 
 
@@ -402,6 +589,7 @@ def build_shot_chart(
     stable_to_track: dict[str, int] | None = None,
     track_to_stable: dict[int, str] | None = None,
     observations_by_stable: dict[str, int] | None = None,
+    **identity_context,
 ) -> dict:
     """Every located shot as a court marker, grouped by the player who took it.
 
@@ -421,6 +609,7 @@ def build_shot_chart(
         stable_to_track=stable_to_track,
         track_to_stable=track_to_stable,
         observations_by_stable=observations_by_stable,
+        **identity_context,
     ).to_dict()
 
     def player_key(entry: dict):
@@ -453,9 +642,11 @@ def build_shot_chart(
             "shot_type": row["shot_type"],
             "timestamp_seconds": row["timestamp_seconds"],
             "attribution": row["attribution"],
+            "outcome_confidence": row["outcome_confidence"],
+            "needs_review": row["needs_review"],
         }
         markers.append(marker)
-        if row["track_id"] is not None:
+        if row["track_id"] is not None or row["stable_player_id"] is not None:
             key = player_key(row)
             bucket = per_player.setdefault(
                 key,
@@ -481,3 +672,108 @@ def build_shot_chart(
             "filtered_to_stable_player_id": stable_player_id,
         },
     }
+
+
+def build_shot_events(
+    *,
+    shots_document: dict | None,
+    teams_document: dict | None,
+    numbers_document: dict | None,
+    track_to_stable: dict[int, str] | None = None,
+    summary_players: dict[str, dict] | None = None,
+) -> list[dict]:
+    """Every detected shot as a timeline event, located or not.
+
+    Unlike the box score this keeps shots the homography could not place (their
+    court position is null): a timeline of what happened should not lose them.
+    The time is the moment of release when the pipeline found one, otherwise the
+    detector's start of the shot.
+    """
+
+    teams_of = team_by_track(teams_document)
+    numbers_stable = number_by_stable(numbers_document)
+    numbers_of = number_by_track(numbers_document)
+    track_to_stable = track_to_stable or {}
+    events: list[dict] = []
+    for shot in (shots_document or {}).get("shots") or []:
+        track_id = _coerce_track_id(shot.get("shooter_track_id"))
+        stable_id = shot.get("shooter_stable_player_id")
+        stable_id = None if stable_id is None else str(stable_id)
+        if stable_id is None and track_id is not None:
+            stable_id = track_to_stable.get(track_id)
+        team_id = shot.get("shooter_team_id")
+        if team_id is None and track_id is not None:
+            team_id = teams_of.get(track_id)
+        jersey = numbers_stable.get(stable_id) if stable_id is not None else numbers_of.get(track_id)
+        if jersey is None and stable_id is not None:
+            read = (summary_players or {}).get(stable_id, {}).get("jersey") or {}
+            if read.get("status") == "confirmed" and _valid_number(read.get("number")):
+                jersey = str(read["number"])
+
+        court_xy = shot.get("shot_origin_court_xy_m")
+        located = bool(court_xy) and len(court_xy) >= 2 and is_on_court((court_xy[0], court_xy[1]))
+        release = shot.get("release_timestamp_seconds")
+        events.append(
+            {
+                "type": "shot",
+                "event_id": shot.get("event_id"),
+                "timestamp_seconds": release if release is not None else shot.get("start_timestamp_seconds"),
+                "end_timestamp_seconds": shot.get("end_timestamp_seconds"),
+                "outcome": outcome_bucket(shot),
+                "outcome_confidence": shot.get("outcome_confidence"),
+                "shot_type": shot.get("shot_type"),
+                "stable_player_id": stable_id,
+                "team_id": None if team_id is None else int(team_id),
+                "jersey_number": jersey,
+                "court_x_m": round(float(court_xy[0]), 2) if located else None,
+                "court_y_m": round(float(court_xy[1]), 2) if located else None,
+                "needs_review": shot.get("needs_review"),
+            }
+        )
+    return events
+
+
+def build_possession_events(rows: list[dict], *, fps: float | None) -> list[dict]:
+    """Experimental ball-handler changes, from the per-frame possession output.
+
+    Only frames the pipeline CONFIRMED a holder on count; a change of confirmed
+    holder is a `pass` when both are on the same team and a `possession_transfer`
+    otherwise. These are a hint for a timeline and feed no statistic.
+    """
+
+    events: list[dict] = []
+    previous: dict | None = None
+    for row in sorted(rows, key=lambda r: r.get("frame_index") or 0):
+        if row.get("status") != "confirmed":
+            continue
+        holder = row.get("stable_player_id")
+        if holder is None:
+            holder = row.get("player_track_id")
+        if holder is None:
+            continue
+        if previous is not None and holder != previous["holder"]:
+            timestamp = row.get("timestamp_seconds")
+            if timestamp is None and fps and row.get("frame_index") is not None:
+                timestamp = round(row["frame_index"] / fps, 3)
+            if timestamp is not None:
+                from_team, to_team = previous["team_id"], row.get("team_id")
+                events.append(
+                    {
+                        "type": "pass" if from_team is not None and from_team == to_team else "possession_transfer",
+                        "experimental": True,
+                        "event_id": f"possession-{row.get('frame_index')}",
+                        "timestamp_seconds": timestamp,
+                        "end_timestamp_seconds": None,
+                        "from_stable_player_id": previous["stable_player_id"],
+                        "to_stable_player_id": row.get("stable_player_id"),
+                        "from_team_id": from_team,
+                        "to_team_id": to_team,
+                        "confidence": row.get("confidence"),
+                    }
+                )
+        previous = {
+            "holder": holder,
+            "stable_player_id": row.get("stable_player_id"),
+            "team_id": row.get("team_id"),
+        }
+    return events

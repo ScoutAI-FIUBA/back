@@ -109,5 +109,6 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             shot_chart_use_case=deps.shot_chart_use_case,
             team_sides_use_case=deps.team_sides_use_case,
             similar_clips_use_case=deps.similar_clips_use_case,
+            events_use_case=deps.events_use_case,
         )
     )
