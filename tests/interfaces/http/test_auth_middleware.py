@@ -34,6 +34,32 @@ class TestAuthMiddleware(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    def test_logout_is_reachable_without_a_bearer_token(self) -> None:
+        app = FastAPI()
+
+        @app.post("/auth/logout")
+        def logout() -> dict[str, str]:
+            return {"status": "ok"}
+
+        def _reject(_: str) -> str:
+            raise AssertionError("logout must not resolve a bearer token")
+
+        middleware = create_require_authenticated_user_middleware(
+            resolve_subject=_reject,
+            public_routes=PUBLIC_ROUTES,
+        )
+
+        @app.middleware("http")
+        async def require_authenticated_user(request, call_next):
+            return await middleware(request, call_next)
+
+        with TestClient(app) as client:
+            no_header = client.post("/auth/logout")
+            expired = client.post("/auth/logout", headers={"authorization": "Bearer expired"})
+
+        self.assertEqual(no_header.status_code, 200)
+        self.assertEqual(expired.status_code, 200)
+
     def test_missing_authorization_header_returns_401(self) -> None:
         app = FastAPI()
 

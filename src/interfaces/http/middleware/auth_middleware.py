@@ -14,6 +14,11 @@ PUBLIC_ROUTES = frozenset(
         "/auth/register",
         "/auth/login",
         "/auth/refresh",
+        # Authenticated by the HttpOnly refresh cookie, not the access token: a
+        # client whose access token already expired must still be able to
+        # revoke its session. The handler is idempotent and does nothing
+        # without a known cookie.
+        "/auth/logout",
         "/auth/password/forgot",
         "/auth/password/reset",
         "/auth/email/verify/confirm",
