@@ -1,13 +1,16 @@
-"""Read a finished job's output and answer the two questions the interface asks.
+"""Read a finished job's output and answer the questions the interface asks.
 
     GetGameStatsUseCase       what happened in the game
     GetCourtPositionsUseCase  where players were on the court
+    GetEventsUseCase          the game as a timeline of events
 
-Both read the small structured files the pipeline wrote and do the interpretation
+All read the small structured files the pipeline wrote and do the interpretation
 here, so the interface receives finished answers rather than raw analysis output.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass, field
 
 from src.application.jobs.errors import (
     JOB_NOT_FINISHED,
@@ -18,10 +21,15 @@ from src.application.jobs.errors import (
 from src.application.jobs.ports import JobRepositoryPort, TeamAccessPort
 from src.application.stats.aggregation import (
     build_game_stats,
+    build_possession_events,
     build_shot_chart,
+    build_shot_events,
     number_by_stable,
     number_by_track,
+    outcome_bucket,
+    summary_players_by_stable,
     team_by_track,
+    track_to_stable_from_summary,
 )
 from src.application.stats.ports import ArtifactReadError, ArtifactReaderPort, RosterReaderPort
 from src.domain.stats.court import COURT_LENGTH_M, COURT_WIDTH_M, is_on_court, step_distance
@@ -29,12 +37,24 @@ from src.domain.stats.similarity import (
     FEATURE_VERSION,
     build_clip_features,
     feature_similarity,
+    resample_rows,
+    rows_from_player_paths,
 )
 from src.domain.jobs.entities import JobStatus
 
 SHOTS_FILE = "projected_shots.json"
 TEAMS_FILE = "teams.json"
 NUMBERS_FILE = "numbers.json"
+# Written by newer pipeline runs: one entry per stable player (ids, team, time on
+# screen, distance, jersey evidence) and their court path at 5 Hz. Read first, so
+# a whole game fits in a web request; the per-frame file below is the legacy
+# fallback and is capped.
+SUMMARY_FILE = "player_summary.json"
+PATHS_FILE = "player_paths.jsonl"
+RESULTS_FILE = "results.json"
+POSSESSION_EVENTS_FILE = "possession_events.jsonl"
+POSITIONS_SOURCE_SUMMARY = "player_summary"
+POSITIONS_SOURCE_TRACKS = "projected_tracks"
 # The two pipelines name their position output differently, and use a different
 # key for the player identifier. A caller should not have to know which pipeline
 # produced a job, so both are accepted.
@@ -45,6 +65,12 @@ TRACK_ID_KEYS = ("track_id", "player_id")
 # produces ~120; a full game at the same rate would be far more, and a web
 # request must not try to hold all of it.
 MAX_POSITION_RECORDS = 20_000
+# One path line per player, so a few hundred is already far above any game.
+MAX_PATH_LINES = 500
+# Possession output is one row per frame; a cap keeps a long game bounded.
+MAX_POSSESSION_RECORDS = 60_000
+# Most events one /events response carries.
+MAX_EVENTS = 500
 
 
 def roster_by_number(players: list) -> dict[str, dict]:
@@ -135,25 +161,102 @@ def _is_v2_output(teams_document: dict | None, numbers_document: dict | None) ->
     )
 
 
-def _v2_identity_maps(
+@dataclass
+class _Identity:
+    """Who the players are, from the best source the job has."""
+
+    track_to_stable: dict[int, str] = field(default_factory=dict)
+    observations: dict[str, int] = field(default_factory=dict)
+    summary_players: dict[str, dict] = field(default_factory=dict)
+    summary_document: dict | None = None
+    positions_source: str | None = None
+    positions_truncated: bool = False
+
+
+def read_summary(artifacts: "ArtifactReaderPort", results_key: str) -> dict | None:
+    """player_summary.json when the job has a usable one, else None.
+
+    An unreadable or oversized summary is treated as absent: the legacy per-frame
+    file can still answer, so a bad optional artifact should not fail the request.
+    """
+
+    try:
+        document = artifacts.read_json(results_key=results_key, filename=SUMMARY_FILE)
+    except ArtifactReadError:
+        return None
+    if not document or not isinstance(document.get("players"), list) or not document["players"]:
+        return None
+    return document
+
+
+def read_video_info(artifacts: "ArtifactReaderPort", results_key: str) -> dict:
+    """`{fps, duration_seconds}` from results.json's `video` block; None when unknown."""
+
+    try:
+        document = artifacts.read_json(results_key=results_key, filename=RESULTS_FILE)
+    except ArtifactReadError:
+        document = None
+    video = (document or {}).get("video")
+    video = video if isinstance(video, dict) else {}
+
+    def number(value):
+        return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 else None
+
+    return {"fps": number(video.get("fps")), "duration_seconds": number(video.get("duration_seconds"))}
+
+
+def _load_identity(
     artifacts: "ArtifactReaderPort",
     results_key: str,
     teams_document: dict | None,
     numbers_document: dict | None,
-) -> tuple[dict[int, str], dict[str, int]]:
-    """Build (track_id -> stable_id, stable_id -> frames) for v2 output.
+) -> _Identity:
+    """Player ids, observations and the source they came from.
 
-    Reads the projected tracks (which carry both ids) only for v2 jobs, so v1
-    jobs skip the extra fetch. Returns empty maps when not v2 or on read error.
+    Prefers player_summary.json (complete for any game length). Otherwise, for v2
+    output only, reads the capped per-frame projected tracks and reports when the
+    cap was hit. v1 jobs skip both reads.
     """
 
+    summary = read_summary(artifacts, results_key)
+    if summary is not None:
+        players = summary_players_by_stable(summary)
+        return _Identity(
+            track_to_stable=track_to_stable_from_summary(players),
+            observations={
+                stable_id: int(entry.get("frames_observed") or 0)
+                for stable_id, entry in players.items()
+            },
+            summary_players=players,
+            summary_document=summary,
+            positions_source=POSITIONS_SOURCE_SUMMARY,
+        )
     if not _is_v2_output(teams_document, numbers_document):
-        return {}, {}
+        return _Identity()
     try:
         rows = read_position_rows(artifacts, results_key)
     except ArtifactReadError:
-        return {}, {}
-    return track_to_stable_from_rows(rows), observations_by_stable_from_rows(rows)
+        return _Identity()
+    return _Identity(
+        track_to_stable=track_to_stable_from_rows(rows),
+        observations=observations_by_stable_from_rows(rows),
+        positions_source=POSITIONS_SOURCE_TRACKS if rows else None,
+        positions_truncated=len(rows) >= MAX_POSITION_RECORDS,
+    )
+
+
+def _identity_kwargs(identity: _Identity, video: dict) -> dict:
+    """The identity-related arguments `build_game_stats` takes, from one lookup."""
+
+    return {
+        "track_to_stable": identity.track_to_stable,
+        "observations_by_stable": identity.observations,
+        "summary_players": identity.summary_players,
+        "ball_summary": (identity.summary_document or {}).get("ball"),
+        "positions_source": identity.positions_source,
+        "positions_truncated": identity.positions_truncated,
+        "fps": video.get("fps") or (identity.summary_document or {}).get("fps"),
+    }
 
 
 def read_position_rows(artifacts: "ArtifactReaderPort", results_key: str) -> list[dict]:
@@ -223,20 +326,21 @@ class GetGameStatsUseCase:
             )
 
         roster = self._roster_for(job, user_id=user_id)
-        track_to_stable, observations = _v2_identity_maps(self._artifacts, key, teams, numbers)
+        identity = _load_identity(self._artifacts, key, teams, numbers)
+        video = read_video_info(self._artifacts, key)
         stats = build_game_stats(
             shots_document=shots,
             teams_document=teams,
             numbers_document=numbers,
             roster=roster,
             our_team_side=job.our_team_side,
-            track_to_stable=track_to_stable,
-            observations_by_stable=observations,
+            **_identity_kwargs(identity, video),
         )
         return {
             "job_id": job.id,
             "video_id": job.video_id,
             "our_team_side": job.our_team_side,
+            "video": video,
             **stats.to_dict(),
         }
 
@@ -297,7 +401,8 @@ class GetShotChartUseCase:
             roster = roster_by_number(
                 self._roster.list_by_owner_and_team(owner_user_id=user_id, team_id=job.team_id)
             )
-        track_to_stable, observations = _v2_identity_maps(self._artifacts, key, teams, numbers)
+        identity = _load_identity(self._artifacts, key, teams, numbers)
+        video = read_video_info(self._artifacts, key)
         chart = build_shot_chart(
             shots_document=shots,
             teams_document=teams,
@@ -306,8 +411,7 @@ class GetShotChartUseCase:
             stable_player_id=stable_player_id,
             roster=roster,
             our_team_side=job.our_team_side,
-            track_to_stable=track_to_stable,
-            observations_by_stable=observations,
+            **_identity_kwargs(identity, video),
         )
         return {
             "job_id": job.id,
@@ -410,11 +514,15 @@ class GetTeamSidesUseCase:
         Without that bridge we fall back to track grouping so a side still shows.
         """
 
-        try:
-            rows = read_position_rows(self._artifacts, results_key)
-        except ArtifactReadError:
-            rows = []
-        track_to_stable = track_to_stable_from_rows(rows)
+        summary = read_summary(self._artifacts, results_key)
+        if summary is not None:
+            track_to_stable = track_to_stable_from_summary(summary_players_by_stable(summary))
+        else:
+            try:
+                rows = read_position_rows(self._artifacts, results_key)
+            except ArtifactReadError:
+                rows = []
+            track_to_stable = track_to_stable_from_rows(rows)
         if not track_to_stable:
             return self._sides_by_track(teams_of, numbers)
 
@@ -520,13 +628,18 @@ class GetSimilarClipsUseCase:
         return features
 
     def _read_position_rows(self, results_key: str) -> list[dict]:
-        for candidate in POSITIONS_FILES:
-            rows = self._artifacts.read_jsonl(
-                results_key=results_key, filename=candidate, max_lines=MAX_POSITION_RECORDS
+        """Positions at 5 Hz, from the player paths when present, else the legacy file."""
+
+        summary = read_summary(self._artifacts, results_key)
+        if summary is not None:
+            paths = self._artifacts.read_jsonl(
+                results_key=results_key, filename=PATHS_FILE, max_lines=MAX_PATH_LINES
             )
-            if rows:
-                return rows
-        return []
+            if paths:
+                return rows_from_player_paths(paths, fps=float(summary.get("fps") or 30.0))
+        rows = read_position_rows(self._artifacts, results_key)
+        fps = (summary or {}).get("fps") or read_video_info(self._artifacts, results_key)["fps"]
+        return resample_rows(rows, fps=float(fps)) if fps else rows
 
 
 class GetCourtPositionsUseCase:
@@ -551,6 +664,10 @@ class GetCourtPositionsUseCase:
     ) -> dict:
         job = self._loader.load(user_id=user_id, team_id=team_id, job_id=job_id)
         key = job.results_key
+
+        from_paths = self._from_player_paths(job, sample_every=sample_every)
+        if from_paths is not None:
+            return from_paths
 
         rows: list[dict] = []
         source_file: str | None = None
@@ -661,5 +778,212 @@ class GetCourtPositionsUseCase:
                 "records_off_court": discarded,
                 "sample_every": sample_every,
                 "truncated": len(rows) >= MAX_POSITION_RECORDS,
+                # Same fact under the name the stats response uses; true means
+                # the paths stop at the row cap and later play is missing.
+                "positions_truncated": len(rows) >= MAX_POSITION_RECORDS,
+                "positions_source": POSITIONS_SOURCE_TRACKS,
             },
         }
+
+    def _from_player_paths(self, job, *, sample_every: int) -> dict | None:
+        """Court paths from the 5 Hz player paths, or None when the job has none.
+
+        Distance and average position come from the pipeline's summary, which saw
+        every frame, so thinning the response with `sample_every` never changes
+        them.
+        """
+
+        key = job.results_key
+        summary = read_summary(self._artifacts, key)
+        if summary is None:
+            return None
+        try:
+            path_rows = self._artifacts.read_jsonl(
+                results_key=key, filename=PATHS_FILE, max_lines=MAX_PATH_LINES
+            )
+        except ArtifactReadError:
+            return None
+        if not path_rows:
+            return None
+
+        teams_of = team_by_track(self._artifacts.read_json(results_key=key, filename=TEAMS_FILE))
+        numbers_document = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
+        numbers_stable = number_by_stable(numbers_document)
+        summary_players = summary_players_by_stable(summary)
+
+        sample_every = max(1, int(sample_every))
+        paths: dict = {}
+        discarded = 0
+        records = 0
+        for line in path_rows:
+            stable_id = line.get("stable_player_id")
+            if stable_id is None:
+                continue
+            stable_id = str(stable_id)
+            info = summary_players.get(stable_id) or {}
+            listed = info.get("track_ids") or []
+            jersey = info.get("jersey") or {}
+            number = numbers_stable.get(stable_id)
+            if number is None and jersey.get("status") == "confirmed" and jersey.get("number"):
+                number = str(jersey["number"])
+            team = line.get("team_id", info.get("team_id"))
+            if team is None:
+                votes = [teams_of[int(t)] for t in listed if int(t) in teams_of]
+                team = max(set(votes), key=votes.count) if votes else None
+
+            positions: list[dict] = []
+            on_court: list[tuple[float, float]] = []
+            for point in line.get("points") or []:
+                if len(point) < 3:
+                    continue
+                xy = (float(point[1]), float(point[2]))
+                if not is_on_court(xy):
+                    discarded += 1
+                    continue
+                records += 1
+                on_court.append(xy)
+                if (len(on_court) - 1) % sample_every == 0:
+                    positions.append(
+                        {"frame_index": point[0], "x_m": round(xy[0], 2), "y_m": round(xy[1], 2)}
+                    )
+
+            average = info.get("avg_xy_m")
+            if not average and on_court:
+                average = [
+                    sum(p[0] for p in on_court) / len(on_court),
+                    sum(p[1] for p in on_court) / len(on_court),
+                ]
+            distance = info.get("distance_m")
+            if distance is None:
+                distance = sum(step_distance(a, b) for a, b in zip(on_court, on_court[1:]))
+            paths[stable_id] = {
+                "track_id": int(listed[0]) if listed else None,
+                "stable_player_id": stable_id,
+                "team_id": team,
+                "jersey_number": number,
+                "jersey_status": jersey.get("status") or "unknown",
+                "seconds_observed": info.get("seconds_observed"),
+                "positions": positions,
+                "movement": {
+                    "samples": len(on_court),
+                    "distance_m": round(float(distance), 2),
+                    "average_position": (
+                        {"x_m": round(average[0], 2), "y_m": round(average[1], 2)}
+                        if average
+                        else None
+                    ),
+                },
+            }
+
+        return {
+            "job_id": job.id,
+            "video_id": job.video_id,
+            "court": {"length_m": COURT_LENGTH_M, "width_m": COURT_WIDTH_M},
+            "players": [paths[key_] for key_ in sorted(paths)],
+            "coverage": {
+                "source_file": PATHS_FILE,
+                "records_read": records + discarded,
+                "records_off_court": discarded,
+                "sample_every": sample_every,
+                "truncated": False,
+                "positions_truncated": False,
+                "positions_source": POSITIONS_SOURCE_SUMMARY,
+                "source_hz": 5,
+            },
+        }
+
+
+class GetEventsUseCase:
+    """The game as a timeline: every shot, plus experimental possession changes.
+
+    Shots come from the same detection the box score counts. Possession events are
+    read only when the pipeline wrote them, are flagged `experimental`, and are
+    never summed into any total.
+    """
+
+    def __init__(
+        self,
+        *,
+        jobs: JobRepositoryPort,
+        artifacts: ArtifactReaderPort,
+        team_access: TeamAccessPort,
+    ) -> None:
+        self._loader = _FinishedJobLoader(jobs=jobs, team_access=team_access)
+        self._artifacts = artifacts
+
+    def execute(self, *, user_id: str, team_id: str, job_id: str) -> dict:
+        job = self._loader.load(user_id=user_id, team_id=team_id, job_id=job_id)
+        key = job.results_key
+
+        try:
+            shots = self._artifacts.read_json(results_key=key, filename=SHOTS_FILE)
+            teams = self._artifacts.read_json(results_key=key, filename=TEAMS_FILE)
+            numbers = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
+        except ArtifactReadError as exc:
+            raise JobError(code=RESULTS_NOT_AVAILABLE, message=str(exc)) from exc
+
+        if shots is None and teams is None:
+            raise JobError(
+                code=RESULTS_NOT_AVAILABLE,
+                message="This job produced no analysis output.",
+            )
+
+        summary = read_summary(self._artifacts, key)
+        summary_players = summary_players_by_stable(summary) if summary else {}
+        track_to_stable = track_to_stable_from_summary(summary_players)
+        # Only jobs whose shots carry no stable shooter need the legacy track map.
+        needs_map = not summary_players and any(
+            shot.get("shooter_stable_player_id") is None and shot.get("shooter_track_id") is not None
+            for shot in (shots or {}).get("shots") or []
+        )
+        if needs_map:
+            track_to_stable = _load_identity(self._artifacts, key, teams, numbers).track_to_stable
+        video = read_video_info(self._artifacts, key)
+        shot_events = build_shot_events(
+            shots_document=shots,
+            teams_document=teams,
+            numbers_document=numbers,
+            track_to_stable=track_to_stable,
+            summary_players=summary_players,
+        )
+
+        possession_events, possession_truncated = self._possession_events(key, video["fps"])
+
+        # Shots are the dependable part, so they win the room when over the cap.
+        shot_events = shot_events[:MAX_EVENTS]
+        possession_events = possession_events[: MAX_EVENTS - len(shot_events)]
+        events = sorted(
+            [*shot_events, *possession_events],
+            key=lambda event: (
+                event["timestamp_seconds"] is None,
+                event["timestamp_seconds"] or 0.0,
+                event["type"] != "shot",
+                str(event["event_id"]),
+            ),
+        )
+        return {
+            "job_id": job.id,
+            "video_id": job.video_id,
+            "video": video,
+            "events": events,
+            "coverage": {
+                "shot_events": len(shot_events),
+                "experimental_events": len(possession_events),
+                "possession_input_truncated": possession_truncated,
+                "max_events": MAX_EVENTS,
+            },
+        }
+
+    def _possession_events(self, results_key: str, fps: float | None) -> tuple[list[dict], bool]:
+        """(events, input_was_cut_short); empty when the job has no possession file."""
+
+        try:
+            rows = self._artifacts.read_jsonl(
+                results_key=results_key,
+                filename=POSSESSION_EVENTS_FILE,
+                max_lines=MAX_POSSESSION_RECORDS,
+            )
+        except ArtifactReadError:
+            # Optional and experimental: an oversized file must not hide the shots.
+            return [], False
+        return build_possession_events(rows, fps=fps), len(rows) >= MAX_POSSESSION_RECORDS

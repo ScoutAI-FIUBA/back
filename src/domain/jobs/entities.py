@@ -54,3 +54,7 @@ class ProcessingJob:
     # Cached clip-similarity feature vector, computed once from the output and
     # reused so comparing clips never re-reads storage. None until first needed.
     features: dict | None = None
+    # Which pipeline phase the service last reported (e.g. "tracking"), so the UI
+    # can say what the job is doing. Only meaningful while active: cleared on
+    # DONE and FAILED. None until the service reports one.
+    progress_phase: str | None = None

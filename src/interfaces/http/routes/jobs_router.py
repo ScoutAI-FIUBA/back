@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from src.application.jobs.errors import JobError, job_error_http_status
 from src.application.jobs.use_cases import (
@@ -45,8 +45,18 @@ class JobStatusCallbackPayload(BaseModel):
     results_key: str | None = None
     error_message: str | None = None
     progress_percent: int | None = None
+    # Pipeline phase the service is in; optional so older callers keep working.
+    progress_phase: str | None = Field(default=None, max_length=40)
     artifacts: list[str] | None = None
     summary: dict | None = None
+
+    @field_validator("progress_phase", mode="before")
+    @classmethod
+    def _trim_phase(cls, value):
+        # Trimmed before the length check; blank means "not reported".
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
 
 def _job_to_dict(job) -> dict[str, object]:
@@ -59,6 +69,7 @@ def _job_to_dict(job) -> dict[str, object]:
         "results_key": job.results_key,
         "error_message": job.error_message,
         "progress_percent": job.progress_percent,
+        "progress_phase": job.progress_phase,
         "summary": job.summary,
         "our_team_side": job.our_team_side,
         "started_at": job.started_at.isoformat() if job.started_at else None,
@@ -108,6 +119,7 @@ def create_jobs_router(
                     results_key=payload.results_key,
                     error_message=payload.error_message,
                     progress_percent=payload.progress_percent,
+                    progress_phase=payload.progress_phase,
                     artifacts=payload.artifacts,
                     summary=payload.summary,
                 )

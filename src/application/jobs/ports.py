@@ -33,7 +33,9 @@ class JobRepositoryPort(ABC):
     def attach_external_id(self, *, job_id: str, external_job_id: str) -> ProcessingJob | None: ...
 
     @abstractmethod
-    def mark_failed(self, *, job_id: str, error_message: str) -> ProcessingJob | None: ...
+    def mark_failed(self, *, job_id: str, error_message: str) -> ProcessingJob | None:
+        """Fail an active job. Returns None, changing nothing, when it is already terminal."""
+
 
     @abstractmethod
     def get_by_id_unscoped(self, *, job_id: str) -> ProcessingJob | None:
@@ -44,7 +46,11 @@ class JobRepositoryPort(ABC):
         """
 
     @abstractmethod
-    def mark_running(self, *, job_id: str, progress_percent: int | None) -> ProcessingJob | None: ...
+    def mark_running(
+        self, *, job_id: str, progress_percent: int | None, progress_phase: str | None = None
+    ) -> ProcessingJob | None:
+        """Record a RUNNING report. Progress never decreases; a terminal job is untouched."""
+
 
     @abstractmethod
     def mark_done(

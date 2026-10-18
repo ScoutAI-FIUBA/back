@@ -99,7 +99,10 @@ class TestGameStats(unittest.TestCase):
         stats = self.build(shots(shot(outcome="unknown")))
         team = next(t for t in stats["teams"] if t["team_id"] == 1)
         self.assertEqual(team["field_goals_made"], 0)
-        self.assertEqual(team["field_goals_attempted"], 1)
+        # An undetermined shot is not an attempt: it is reported separately so it
+        # cannot drag a percentage down.
+        self.assertEqual(team["field_goals_attempted"], 0)
+        self.assertEqual(team["unresolved_attempts"], 1)
 
     def test_percentages_are_computed(self) -> None:
         stats = self.build(shots(shot(event_id=1), shot(event_id=2, outcome="missed")))

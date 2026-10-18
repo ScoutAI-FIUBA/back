@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from src.application.jobs.errors import JobError, job_error_http_status
 from src.application.stats.use_cases import (
     GetCourtPositionsUseCase,
+    GetEventsUseCase,
     GetGameStatsUseCase,
     GetShotChartUseCase,
     GetSimilarClipsUseCase,
@@ -22,8 +23,32 @@ def create_stats_router(
     shot_chart_use_case: GetShotChartUseCase,
     team_sides_use_case: GetTeamSidesUseCase,
     similar_clips_use_case: GetSimilarClipsUseCase,
+    events_use_case: GetEventsUseCase | None = None,
 ) -> APIRouter:
     router = APIRouter(tags=["stats"])
+
+    if events_use_case is not None:
+
+        @router.get("/jobs/{job_id}/events", response_model=None)
+        def get_events(job_id: UUID, team_id: UUID, request: Request):
+            """The game as a time-ordered list of events.
+
+            Every shot (time of release when known, outcome, shooter, court
+            position, `needs_review`). Possession changes (`pass`,
+            `possession_transfer`) appear only when the analysis produced them, are
+            marked `experimental` and are never part of the box score.
+            """
+
+            try:
+                return events_use_case.execute(
+                    user_id=str(request.state.user_id),
+                    team_id=str(team_id),
+                    job_id=str(job_id),
+                )
+            except JobError as exc:
+                return JSONResponse(
+                    status_code=job_error_http_status(exc.code), content=exc.to_envelope()
+                )
 
     @router.get("/jobs/{job_id}/similar", response_model=None)
     def get_similar_clips(
