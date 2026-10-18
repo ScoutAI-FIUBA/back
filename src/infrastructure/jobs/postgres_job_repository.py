@@ -40,6 +40,7 @@ def _row_to_job(row: dict[str, Any] | None) -> ProcessingJob | None:
         summary=row.get("summary"),
         our_team_side=row.get("our_team_side"),
         features=row.get("features"),
+        progress_phase=row.get("progress_phase"),
         started_at=row.get("started_at"),
         finished_at=row.get("finished_at"),
         created_at=row["created_at"],
@@ -119,9 +120,12 @@ class PostgresJobRepository:
                 UPDATE processing_jobs
                    SET status = %(status)s,
                        error_message = %(error_message)s,
+                       progress_phase = NULL,
                        finished_at = %(now)s,
                        updated_at = %(now)s
                  WHERE id = %(job_id)s::uuid
+                   -- Never overwrite an outcome: a stale sweep can race a DONE callback.
+                   AND status IN ('QUEUED', 'RUNNING')
                 RETURNING *
                 """,
                 {
@@ -135,25 +139,32 @@ class PostgresJobRepository:
             )
             return _row_to_job(cur.fetchone())
 
-    def mark_running(self, *, job_id: str, progress_percent: int | None) -> ProcessingJob | None:
+    def mark_running(
+        self, *, job_id: str, progress_percent: int | None, progress_phase: str | None = None
+    ) -> ProcessingJob | None:
         now = datetime.now(timezone.utc)
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 UPDATE processing_jobs
                    SET status = %(status)s,
-                       progress_percent = COALESCE(%(progress_percent)s, progress_percent),
+                       -- GREATEST skips NULLs, so a missing value keeps the old one
+                       -- and a late, lower report can never move the bar backwards.
+                       progress_percent = GREATEST(progress_percent, %(progress_percent)s::int),
+                       progress_phase = COALESCE(%(progress_phase)s, progress_phase),
                        -- Preserved across repeated RUNNING callbacks so it means
                        -- "when work began", not "when we last heard from it".
                        started_at = COALESCE(started_at, %(now)s),
                        updated_at = %(now)s
                  WHERE id = %(job_id)s::uuid
+                   AND status IN ('QUEUED', 'RUNNING')
                 RETURNING *
                 """,
                 {
                     "job_id": job_id,
                     "status": JobStatus.RUNNING.value,
                     "progress_percent": progress_percent,
+                    "progress_phase": progress_phase,
                     "now": now,
                 },
             )
@@ -177,6 +188,7 @@ class PostgresJobRepository:
                        artifacts = COALESCE(%(artifacts)s::jsonb, artifacts),
                        summary = COALESCE(%(summary)s::jsonb, summary),
                        progress_percent = 100,
+                       progress_phase = NULL,
                        finished_at = %(now)s,
                        updated_at = %(now)s
                  WHERE id = %(job_id)s::uuid

@@ -622,10 +622,12 @@ def build_http_dependencies(
         get_processing_job_use_case=GetProcessingJobUseCase(
             jobs=jobs_repo,
             team_access=team_access,
+            uow=uow,
         ),
         list_video_jobs_use_case=ListVideoJobsUseCase(
             jobs=jobs_repo,
             team_access=team_access,
+            uow=uow,
         ),
         record_job_progress_use_case=RecordJobProgressUseCase(jobs=jobs_repo, uow=uow),
         get_job_results_use_case=GetJobResultsUseCase(

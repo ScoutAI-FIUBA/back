@@ -34,19 +34,44 @@ from src.domain.jobs.entities import JobStatus, ProcessingJob
 RESULTS_KEY_TEMPLATE = "results/{team_id}/{job_id}"
 
 # A worker can die (Modal timeout, crash) without sending a terminal callback,
-# leaving a job RUNNING forever and blocking its video. An active job older than
-# this — comfortably past the processing service's own timeout — is treated as
-# dead so a new submission can proceed.
-STALE_ACTIVE_JOB_AFTER = timedelta(minutes=45)
+# leaving a job RUNNING forever and blocking its video. A live worker reports
+# progress every few seconds, so an active job whose last update (`updated_at`)
+# is older than this heartbeat window is treated as dead.
+STALE_ACTIVE_JOB_HEARTBEAT = timedelta(minutes=15)
+# Backstop for a worker that keeps heartbeating but never finishes: no job may
+# stay active longer than this since it started (or was created, if never started).
+STALE_ACTIVE_JOB_MAX_RUNTIME = timedelta(minutes=75)
+STALE_JOB_ERROR_MESSAGE = "Job stopped reporting progress; marked stale."
+
+
+def _as_utc(moment: datetime) -> datetime:
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
 
 
 def _is_stale_active_job(job: ProcessingJob) -> bool:
-    reference = job.updated_at or job.created_at
-    if reference is None:
+    if not job.status.is_active:
         return False
-    if reference.tzinfo is None:
-        reference = reference.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - reference > STALE_ACTIVE_JOB_AFTER
+    now = datetime.now(timezone.utc)
+    if job.updated_at is not None and now - _as_utc(job.updated_at) > STALE_ACTIVE_JOB_HEARTBEAT:
+        return True
+    started = job.started_at or job.created_at
+    return started is not None and now - _as_utc(started) > STALE_ACTIVE_JOB_MAX_RUNTIME
+
+
+def _retire_if_stale(jobs: JobRepositoryPort, uow: UnitOfWorkPort | None, job: ProcessingJob) -> ProcessingJob:
+    """Fail `job` when it is a stale active job; otherwise return it unchanged.
+
+    Idempotent: the repository only fails a still-active job, so a job that
+    finished meanwhile (or was already retired) comes back as it is stored.
+    """
+    if not _is_stale_active_job(job):
+        return job
+    if uow is not None:
+        with uow.transaction():
+            failed = jobs.mark_failed(job_id=job.id, error_message=STALE_JOB_ERROR_MESSAGE)
+    else:
+        failed = jobs.mark_failed(job_id=job.id, error_message=STALE_JOB_ERROR_MESSAGE)
+    return failed or job
 
 
 @dataclass(frozen=True)
@@ -107,10 +132,7 @@ class SubmitProcessingJobUseCase:
         active = self._jobs.find_active_for_video(video_id=command.video_id)
         if active is not None:
             if _is_stale_active_job(active):
-                self._jobs.mark_failed(
-                    job_id=active.id,
-                    error_message="Job exceeded the maximum runtime without reporting; marked stale.",
-                )
+                self._jobs.mark_failed(job_id=active.id, error_message=STALE_JOB_ERROR_MESSAGE)
             else:
                 return active
 
@@ -177,6 +199,7 @@ class RecordJobProgressCommand:
     results_key: str | None = None
     error_message: str | None = None
     progress_percent: int | None = None
+    progress_phase: str | None = None
     # What the service wrote, reported on completion so this app never has to
     # list or read the object store to find out.
     artifacts: list[str] | None = None
@@ -212,7 +235,9 @@ class RecordJobProgressUseCase:
         with self._uow.transaction():
             if command.status is JobStatus.RUNNING:
                 updated = self._jobs.mark_running(
-                    job_id=command.job_id, progress_percent=command.progress_percent
+                    job_id=command.job_id,
+                    progress_percent=command.progress_percent,
+                    progress_phase=command.progress_phase,
                 )
             elif command.status is JobStatus.DONE:
                 updated = self._jobs.mark_done(
@@ -237,16 +262,21 @@ class RecordJobProgressUseCase:
 
 
 class GetProcessingJobUseCase:
-    def __init__(self, *, jobs: JobRepositoryPort, team_access: TeamAccessPort) -> None:
+    """Poll one job. A stale active job is retired here, so polling never shows a dead job as running."""
+
+    def __init__(
+        self, *, jobs: JobRepositoryPort, team_access: TeamAccessPort, uow: UnitOfWorkPort | None = None
+    ) -> None:
         self._jobs = jobs
         self._team_access = team_access
+        self._uow = uow
 
     def execute(self, *, user_id: str, team_id: str, job_id: str) -> ProcessingJob:
         self._team_access.assert_access(user_id=user_id, team_id=team_id)
         job = self._jobs.get_by_id(job_id=job_id, team_id=team_id)
         if job is None:
             raise JobError(code=JOB_NOT_FOUND, message="Job not found.")
-        return job
+        return _retire_if_stale(self._jobs, self._uow, job)
 
 
 class SetJobTeamSideUseCase:
@@ -342,10 +372,14 @@ class GetJobResultsUseCase:
 
 
 class ListVideoJobsUseCase:
-    def __init__(self, *, jobs: JobRepositoryPort, team_access: TeamAccessPort) -> None:
+    def __init__(
+        self, *, jobs: JobRepositoryPort, team_access: TeamAccessPort, uow: UnitOfWorkPort | None = None
+    ) -> None:
         self._jobs = jobs
         self._team_access = team_access
+        self._uow = uow
 
     def execute(self, *, user_id: str, team_id: str, video_id: str) -> list[ProcessingJob]:
         self._team_access.assert_access(user_id=user_id, team_id=team_id)
-        return self._jobs.list_by_video(video_id=video_id, team_id=team_id)
+        jobs = self._jobs.list_by_video(video_id=video_id, team_id=team_id)
+        return [_retire_if_stale(self._jobs, self._uow, job) for job in jobs]

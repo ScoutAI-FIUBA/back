@@ -26,6 +26,9 @@ from src.application.jobs.use_cases import (
     RecordJobProgressCommand,
     RecordJobProgressUseCase,
     SubmitProcessingJobCommand,
+    STALE_ACTIVE_JOB_HEARTBEAT,
+    STALE_ACTIVE_JOB_MAX_RUNTIME,
+    STALE_JOB_ERROR_MESSAGE,
     SubmitProcessingJobUseCase,
 )
 from src.domain.jobs.entities import JobStatus, ProcessingJob
@@ -82,6 +85,9 @@ class FakeJobRepository:
         return updated
 
     def mark_failed(self, *, job_id, error_message):
+        existing = self.jobs.get(job_id)
+        if existing is not None and existing.status.is_terminal:
+            return None
         self.failed_with.append((job_id, error_message))
         job = build_job(id=job_id, status=JobStatus.FAILED, error_message=error_message)
         self.jobs[job_id] = job
@@ -93,8 +99,14 @@ class FakeJobRepository:
     def get_by_id_unscoped(self, *, job_id):
         return self.jobs.get(job_id)
 
-    def mark_running(self, *, job_id, progress_percent):
-        job = build_job(id=job_id, status=JobStatus.RUNNING, progress_percent=progress_percent)
+    def mark_running(self, *, job_id, progress_percent, progress_phase=None):
+        # Mirrors the SQL: progress only moves forward, a missing phase keeps the old one.
+        previous = self.jobs.get(job_id)
+        old_percent = previous.progress_percent if previous else None
+        old_phase = previous.progress_phase if previous else None
+        percent = max((v for v in (old_percent, progress_percent) if v is not None), default=None)
+        job = build_job(id=job_id, status=JobStatus.RUNNING, progress_percent=percent,
+                        progress_phase=progress_phase or old_phase)
         self.jobs[job_id] = job
         return job
 
@@ -485,6 +497,171 @@ class TestListVideoJobs(unittest.TestCase):
     def test_empty_when_video_has_no_jobs(self) -> None:
         use_case = ListVideoJobsUseCase(jobs=FakeJobRepository(), team_access=FakeTeamAccess())
         self.assertEqual(use_case.execute(user_id=USER_ID, team_id=TEAM_ID, video_id=VIDEO_ID), [])
+
+
+def ago(delta: timedelta) -> datetime:
+    return datetime.now(timezone.utc) - delta
+
+
+class TestHeartbeatStaleness(unittest.TestCase):
+    def test_heartbeat_window_is_fifteen_minutes(self) -> None:
+        self.assertEqual(STALE_ACTIVE_JOB_HEARTBEAT, timedelta(minutes=15))
+
+    def test_submit_keeps_a_job_that_reported_14m59s_ago(self) -> None:
+        use_case, parts = build_submit()
+        parts["jobs"].jobs["live"] = build_job(
+            id="live", status=JobStatus.RUNNING, updated_at=ago(timedelta(minutes=14, seconds=59))
+        )
+        job = use_case.execute(SubmitProcessingJobCommand(USER_ID, TEAM_ID, VIDEO_ID))
+        self.assertEqual(job.id, "live")
+        self.assertEqual(parts["jobs"].failed_with, [])
+
+    def test_submit_retires_a_job_that_reported_15m01s_ago(self) -> None:
+        use_case, parts = build_submit()
+        parts["jobs"].jobs["dead"] = build_job(
+            id="dead", status=JobStatus.RUNNING, updated_at=ago(timedelta(minutes=15, seconds=1))
+        )
+        job = use_case.execute(SubmitProcessingJobCommand(USER_ID, TEAM_ID, VIDEO_ID))
+        self.assertEqual(job.id, JOB_ID)
+        self.assertEqual(parts["jobs"].failed_with, [("dead", STALE_JOB_ERROR_MESSAGE)])
+
+    def test_a_queued_job_is_subject_to_the_same_rule(self) -> None:
+        job = build_job(status=JobStatus.QUEUED, updated_at=ago(timedelta(minutes=16)))
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = job
+        use_case = GetProcessingJobUseCase(jobs=jobs, team_access=FakeTeamAccess())
+        self.assertEqual(use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID).status, JobStatus.FAILED)
+
+    def test_backstop_retires_a_job_that_keeps_heartbeating_past_75_minutes(self) -> None:
+        self.assertEqual(STALE_ACTIVE_JOB_MAX_RUNTIME, timedelta(minutes=75))
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job(
+            status=JobStatus.RUNNING,
+            started_at=ago(timedelta(minutes=75, seconds=1)),
+            updated_at=ago(timedelta(seconds=5)),
+        )
+        use_case = GetProcessingJobUseCase(jobs=jobs, team_access=FakeTeamAccess())
+        self.assertEqual(use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID).status, JobStatus.FAILED)
+
+    def test_backstop_does_not_fire_at_74_minutes(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job(
+            status=JobStatus.RUNNING,
+            started_at=ago(timedelta(minutes=74)),
+            updated_at=ago(timedelta(seconds=5)),
+        )
+        use_case = GetProcessingJobUseCase(jobs=jobs, team_access=FakeTeamAccess())
+        self.assertEqual(use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID).status, JobStatus.RUNNING)
+
+    def test_backstop_uses_created_at_when_the_job_never_started(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job(
+            status=JobStatus.QUEUED,
+            created_at=ago(timedelta(minutes=76)),
+            updated_at=ago(timedelta(seconds=5)),
+        )
+        use_case = GetProcessingJobUseCase(jobs=jobs, team_access=FakeTeamAccess())
+        self.assertEqual(use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID).status, JobStatus.FAILED)
+
+    def test_get_retires_a_stale_job_with_the_stale_message(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job(status=JobStatus.RUNNING, updated_at=ago(timedelta(minutes=20)))
+        uow = FakeUnitOfWork()
+        use_case = GetProcessingJobUseCase(jobs=jobs, team_access=FakeTeamAccess(), uow=uow)
+        job = use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(job.status, JobStatus.FAILED)
+        self.assertEqual(job.error_message, STALE_JOB_ERROR_MESSAGE)
+        self.assertEqual(uow.transactions, 1)
+
+    def test_get_is_idempotent_and_never_touches_terminal_jobs(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job(status=JobStatus.RUNNING, updated_at=ago(timedelta(minutes=20)))
+        jobs.jobs["done"] = build_job(id="done", status=JobStatus.DONE, updated_at=ago(timedelta(hours=5)))
+        use_case = GetProcessingJobUseCase(jobs=jobs, team_access=FakeTeamAccess())
+        use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        done = use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id="done")
+        self.assertEqual(done.status, JobStatus.DONE)
+        self.assertEqual(jobs.failed_with, [(JOB_ID, STALE_JOB_ERROR_MESSAGE)])
+
+    def test_get_leaves_a_fresh_job_alone(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job(status=JobStatus.RUNNING, updated_at=ago(timedelta(minutes=14, seconds=59)))
+        use_case = GetProcessingJobUseCase(jobs=jobs, team_access=FakeTeamAccess())
+        self.assertEqual(use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID).status, JobStatus.RUNNING)
+        self.assertEqual(jobs.failed_with, [])
+
+    def test_list_retires_only_the_stale_active_jobs(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs["stale"] = build_job(id="stale", status=JobStatus.RUNNING, updated_at=ago(timedelta(minutes=30)))
+        jobs.jobs["fresh"] = build_job(id="fresh", status=JobStatus.RUNNING, updated_at=ago(timedelta(minutes=1)))
+        jobs.jobs["done"] = build_job(id="done", status=JobStatus.DONE, updated_at=ago(timedelta(days=1)))
+        use_case = ListVideoJobsUseCase(jobs=jobs, team_access=FakeTeamAccess())
+        statuses = {j.id: j.status for j in use_case.execute(user_id=USER_ID, team_id=TEAM_ID, video_id=VIDEO_ID)}
+        self.assertEqual(
+            statuses,
+            {"stale": JobStatus.FAILED, "fresh": JobStatus.RUNNING, "done": JobStatus.DONE},
+        )
+        self.assertEqual(jobs.failed_with, [("stale", STALE_JOB_ERROR_MESSAGE)])
+
+
+class TestProgressPhase(unittest.TestCase):
+    def _record(self, jobs, **kwargs):
+        use_case = RecordJobProgressUseCase(jobs=jobs, uow=FakeUnitOfWork())
+        return use_case.execute(RecordJobProgressCommand(job_id=JOB_ID, status=JobStatus.RUNNING, **kwargs))
+
+    def test_phase_round_trips_through_a_running_report(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job()
+        job = self._record(jobs, progress_percent=10, progress_phase="tracking")
+        self.assertEqual(job.progress_phase, "tracking")
+        self.assertEqual(jobs.jobs[JOB_ID].progress_phase, "tracking")
+
+    def test_old_payload_without_a_phase_still_works(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job()
+        job = self._record(jobs, progress_percent=30)
+        self.assertEqual(job.progress_percent, 30)
+        self.assertIsNone(job.progress_phase)
+
+    def test_a_report_without_a_phase_keeps_the_previous_one(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job()
+        self._record(jobs, progress_percent=10, progress_phase="tracking")
+        job = self._record(jobs, progress_percent=12)
+        self.assertEqual(job.progress_phase, "tracking")
+
+    def test_progress_never_goes_backwards(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job()
+        self._record(jobs, progress_percent=40)
+        job = self._record(jobs, progress_percent=25)
+        self.assertEqual(job.progress_percent, 40)
+
+    def test_callback_after_a_terminal_status_is_ignored(self) -> None:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job(status=JobStatus.FAILED, error_message="boom")
+        job = self._record(jobs, progress_percent=50, progress_phase="tracking")
+        self.assertEqual(job.status, JobStatus.FAILED)
+        self.assertIsNone(job.progress_phase)
+
+    def test_router_payload_trims_and_bounds_the_phase(self) -> None:
+        from pydantic import ValidationError
+
+        from src.interfaces.http.routes.jobs_router import JobStatusCallbackPayload
+
+        base = {"job_id": JOB_ID, "status": "RUNNING"}
+        self.assertIsNone(JobStatusCallbackPayload(**base).progress_phase)
+        self.assertEqual(JobStatusCallbackPayload(**base, progress_phase="  tracking ").progress_phase, "tracking")
+        self.assertIsNone(JobStatusCallbackPayload(**base, progress_phase="   ").progress_phase)
+        with self.assertRaises(ValidationError):
+            JobStatusCallbackPayload(**base, progress_phase="x" * 41)
+
+    def test_job_dict_includes_the_phase(self) -> None:
+        from src.interfaces.http.routes.jobs_router import _job_to_dict
+
+        self.assertEqual(_job_to_dict(build_job(progress_phase="identity"))["progress_phase"], "identity")
+        self.assertIsNone(_job_to_dict(build_job())["progress_phase"])
 
 
 class TestJobStatus(unittest.TestCase):
