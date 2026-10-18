@@ -3,6 +3,8 @@ TEAM_NOT_FOUND = "TEAM_NOT_FOUND"
 PLAYER_NOT_FOUND = "PLAYER_NOT_FOUND"
 INVALID_MATCH_TEAMS = "INVALID_MATCH_TEAMS"
 INVALID_WINNER_TEAM = "INVALID_WINNER_TEAM"
+INVALID_STATS_FILE = "INVALID_STATS_FILE"
+STATS_FILE_TOO_LARGE = "STATS_FILE_TOO_LARGE"
 
 
 class MatchError(Exception):
@@ -22,6 +24,8 @@ class MatchError(Exception):
 def match_error_http_status(code: str) -> int:
     if code in (MATCH_NOT_FOUND, TEAM_NOT_FOUND, PLAYER_NOT_FOUND):
         return 404
-    if code in (INVALID_MATCH_TEAMS, INVALID_WINNER_TEAM):
+    if code in (INVALID_MATCH_TEAMS, INVALID_WINNER_TEAM, INVALID_STATS_FILE):
         return 422
+    if code == STATS_FILE_TOO_LARGE:
+        return 413
     return 400

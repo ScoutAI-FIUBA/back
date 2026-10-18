@@ -5,11 +5,12 @@ from http import HTTPStatus
 from typing import Any, Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from src.application.matches.errors import MatchError, match_error_http_status
+from src.application.matches.excel_import import PreviewMatchStatsImportUseCase, PreviewStatsImportCommand
 from src.application.matches.use_cases import (
     CreateMatchCommand,
     CreateMatchUseCase,
@@ -21,6 +22,8 @@ from src.application.matches.use_cases import (
     ReplaceMatchStatsUseCase,
 )
 
+
+MAX_IMPORT_FILE_BYTES = 5 * 1024 * 1024
 
 JerseyNumber = Annotated[str, StringConstraints(pattern=r"^[0-9]{1,2}$")]
 
@@ -85,6 +88,7 @@ def create_matches_router(
     get_match_use_case: GetMatchUseCase,
     replace_match_stats_use_case: ReplaceMatchStatsUseCase,
     get_match_stats_use_case: GetMatchStatsUseCase,
+    preview_stats_import_use_case: PreviewMatchStatsImportUseCase | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/matches", tags=["matches"])
 
@@ -160,5 +164,36 @@ def create_matches_router(
             }
         except MatchError as exc:
             return JSONResponse(status_code=match_error_http_status(exc.code), content=exc.to_envelope())
+
+
+    if preview_stats_import_use_case is not None:
+
+        @router.post("/stats/import-preview", response_model=None)
+        def preview_stats_import(
+            request: Request,
+            file: UploadFile = File(...),
+            home_team_id: UUID | None = Form(default=None),
+            away_team_id: UUID | None = Form(default=None),
+        ):
+            """Reads a federation .xlsx box score and returns a draft; nothing is saved."""
+
+            try:
+                data = file.file.read(MAX_IMPORT_FILE_BYTES + 1)
+                preview = preview_stats_import_use_case.execute(
+                    PreviewStatsImportCommand(
+                        user_id=str(request.state.user_id),
+                        data=data,
+                        home_team_id=str(home_team_id) if home_team_id is not None else None,
+                        away_team_id=str(away_team_id) if away_team_id is not None else None,
+                    )
+                )
+                return {
+                    "winner_team_id": preview.winner_team_id,
+                    "participants": preview.participants,
+                    "stats": preview.stats,
+                    "report": preview.report,
+                }
+            except MatchError as exc:
+                return JSONResponse(status_code=match_error_http_status(exc.code), content=exc.to_envelope())
 
     return router

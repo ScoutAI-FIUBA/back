@@ -42,6 +42,8 @@ from src.application.clip_collections.use_cases import (
     ListClipCollectionsUseCase,
     UpdateClipDescriptionUseCase,
 )
+from src.application.matches.excel_import import PreviewMatchStatsImportUseCase
+from src.infrastructure.matches.cabb_box_score_parser import CabbBoxScoreParser
 from src.application.matches.use_cases import (
     CreateMatchUseCase,
     GetMatchStatsUseCase,
@@ -260,6 +262,7 @@ class HttpDependencies:
     get_match_use_case: GetMatchUseCase
     replace_match_stats_use_case: ReplaceMatchStatsUseCase
     get_match_stats_use_case: GetMatchStatsUseCase
+    preview_stats_import_use_case: PreviewMatchStatsImportUseCase
     get_team_stats_use_case: GetTeamStatsUseCase
     init_video_upload_use_case: InitVideoUploadUseCase
     complete_video_upload_use_case: CompleteVideoUploadUseCase
@@ -548,6 +551,9 @@ def build_http_dependencies(
         get_match_use_case=GetMatchUseCase(matches=matches_repo),
         replace_match_stats_use_case=ReplaceMatchStatsUseCase(matches=matches_repo, players=players_repo, ids=ids, uow=uow),
         get_match_stats_use_case=GetMatchStatsUseCase(matches=matches_repo),
+        preview_stats_import_use_case=PreviewMatchStatsImportUseCase(
+            parser=CabbBoxScoreParser(), teams=teams_repo, players=players_repo
+        ),
         get_team_stats_use_case=GetTeamStatsUseCase(matches=matches_repo, teams=teams_repo),
         init_video_upload_use_case=InitVideoUploadUseCase(
             videos=videos_repo,
