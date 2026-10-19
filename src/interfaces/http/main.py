@@ -25,8 +25,6 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="ScoutAI Backend", version="0.1.0")
 
-    configure_cors(app)
-
     jwt_secret = require_env("AUTH_JWT_SECRET")
     refresh_secret = require_env("AUTH_REFRESH_SECRET")
     jwt_issuer = require_env("AUTH_JWT_ISSUER")
@@ -51,6 +49,12 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def require_authenticated_user(request, call_next):
         return await require_authenticated_user_handler(request, call_next)
+
+    # Registered AFTER the auth middleware on purpose: Starlette wraps each new middleware
+    # around the previous ones, so CORS must be added last to be outermost. Otherwise a 401
+    # from the auth middleware leaves without CORS headers, the browser hides it, and the
+    # frontend can never see that the token expired and refresh the session.
+    configure_cors(app)
 
     register_error_handlers(app)
     register_health_routes(
