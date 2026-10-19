@@ -242,3 +242,57 @@ class TestMainWiring(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCorsOnAuthErrors(unittest.TestCase):
+    """A 401 from the auth middleware must still carry CORS headers.
+
+    Without them the browser hides the 401, so the frontend never learns the access
+    token expired and cannot refresh the session.
+    """
+
+    ORIGIN = "https://app.scoutai.example"
+
+    def _client(self) -> TestClient:
+        env = {
+            "AUTH_JWT_SECRET": "secret",
+            "AUTH_REFRESH_SECRET": "refresh",
+            "AUTH_JWT_ISSUER": "scoutai",
+            "AUTH_JWT_AUDIENCE": "scoutai-client",
+            "DATABASE_URL": "postgresql://test",
+            "APP_ENV": "production",
+            "CORS_ORIGINS": self.ORIGIN,
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with patch("src.interfaces.http.main.psycopg.connect", return_value=_FakeConnection()):
+                return TestClient(create_app())
+
+    def test_unauthorized_response_has_cors_headers(self) -> None:
+        response = self._client().get("/auth/me", headers={"Origin": self.ORIGIN})
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), self.ORIGIN)
+        self.assertEqual(response.headers.get("access-control-allow-credentials"), "true")
+
+    def test_invalid_token_response_has_cors_headers(self) -> None:
+        response = self._client().get(
+            "/auth/me", headers={"Origin": self.ORIGIN, "Authorization": "Bearer not-a-token"}
+        )
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), self.ORIGIN)
+
+    def test_preflight_still_works_without_credentials(self) -> None:
+        response = self._client().options(
+            "/auth/me",
+            headers={"Origin": self.ORIGIN, "Access-Control-Request-Method": "GET"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get("access-control-allow-origin"), self.ORIGIN)
+
+    def test_a_disallowed_origin_gets_no_cors_headers(self) -> None:
+        response = self._client().get("/auth/me", headers={"Origin": "https://evil.example"})
+
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("access-control-allow-origin", response.headers)
