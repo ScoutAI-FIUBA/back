@@ -119,9 +119,8 @@ rebounds, assists, steals, blocks, turnovers and free throws are not measured an
 - Only shots by roster players are kept, tied by confirmed jersey number on the job's marked team side.
 - Only the latest finished analysis of each video counts, so analysing a video twice never double-counts.
 - Rows ignore soft-deleted videos and are removed with the player or the job.
-- A problem while keeping these rows never fails the job callback; rebuild any time with
-  `python scripts/backfill_player_analysis.py` (`--dry-run` lists what it would rebuild). Run it once after deploying
-  to cover analyses that finished earlier.
+- A problem while keeping these rows never fails the job callback. Analyses that finished before this existed are
+  built the next time the scout saves "our team" on them (re-selecting the side triggers the same sync).
 - `players.stats` stores whole-number per-game averages (the existing contract); exact figures are in `analysis-stats`.
 
 - Players contract and examples: `specs/api/players.md`.
