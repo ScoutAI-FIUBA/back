@@ -34,7 +34,9 @@ DATABASE_URL=postgresql://postgres:postgres@localhost:5435/scoutai_dev \
   pytest -q -m integration tests/integration
 ```
 
-Team CRUD integration coverage lives in `tests/integration/test_team_crud_integration.py`.
+Team CRUD integration coverage lives in `tests/integration/test_team_crud_integration.py`; player analysis stats in
+`tests/integration/test_player_analysis_integration.py`. The integration guard only accepts local hosts, so for a
+throwaway database without a hostname (for example a Unix-socket Postgres) set `INTEGRATION_DB_ALLOW_REMOTE=1`.
 
 ## API endpoints
 
@@ -103,6 +105,24 @@ Note: CORS preflight `OPTIONS` requests are also allowed without auth.
 | `PUT` | `/players/{player_id}` | Yes | Update a player by UUID. |
 | `PUT` | `/players/{player_id}/team/{team_id}` | Yes | Assign a player to a team using UUIDs. |
 | `DELETE` | `/players/{player_id}` | Yes | Delete a player by UUID. |
+| `GET` | `/players/{player_id}/shot-chart` | Yes | Every shot the player took across their analysed videos, with court position (`x_m`, `y_m`), `made` and `result` (made / missed / unknown) for green and red dots. |
+| `GET` | `/players/{player_id}/analysis-stats` | Yes | Totals the video analyses measured for the player (games, points, FG/2P/3P, per-zone and per-shot-type, distance), across all their videos. |
+
+#### Player stats from video analyses
+
+When an analysis finishes, and whenever the scout marks which side is their team on a job, what the
+analysis measured for each roster player is kept in `player_analysis_games` and
+`player_analysis_shots` (migration `006_player_analysis_stats.sql`), and the measured fields of
+`players.stats` are filled (`games_played`, `points`, `field_goals`, `two_point`, `three_point`;
+rebounds, assists, steals, blocks, turnovers and free throws are not measured and stay 0).
+
+- Only shots by roster players are kept, tied by confirmed jersey number on the job's marked team side.
+- Only the latest finished analysis of each video counts, so analysing a video twice never double-counts.
+- Rows ignore soft-deleted videos and are removed with the player or the job.
+- A problem while keeping these rows never fails the job callback; rebuild any time with
+  `python scripts/backfill_player_analysis.py` (`--dry-run` lists what it would rebuild). Run it once after deploying
+  to cover analyses that finished earlier.
+- `players.stats` stores whole-number per-game averages (the existing contract); exact figures are in `analysis-stats`.
 
 - Players contract and examples: `specs/api/players.md`.
 - Player-team association persistence: `src/infrastructure/team/migrations/002_player_team_association.sql` adds nullable `players.team_id` foreign key to `teams(id)`.

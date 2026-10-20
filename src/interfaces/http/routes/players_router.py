@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from src.application.players.errors import PlayerError, player_error_http_status
+from src.application.stats.player_analysis import GetPlayerAnalysisStatsUseCase, GetPlayerShotChartUseCase
 from src.application.matches.errors import MatchError, match_error_http_status
 from src.application.matches.use_cases import GetPlayerMatchesUseCase
 from src.application.players.use_cases import (
@@ -98,6 +99,8 @@ def create_players_router(
     assign_player_team_use_case: AssignPlayerTeamUseCase,
     get_player_stats_use_case: GetPlayerStatsUseCase,
     get_player_matches_use_case: GetPlayerMatchesUseCase,
+    get_player_shot_chart_use_case: GetPlayerShotChartUseCase | None = None,
+    get_player_analysis_stats_use_case: GetPlayerAnalysisStatsUseCase | None = None,
 ) -> APIRouter:
     """Creates players HTTP endpoints and maps domain failures to HTTP responses.
 
@@ -168,6 +171,36 @@ def create_players_router(
             return {"player": {"id": player.id, "stats": player.stats}}
         except PlayerError as exc:
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
+
+    if get_player_shot_chart_use_case is not None:
+
+        @router.get("/{player_id}/shot-chart", response_model=None)
+        def get_player_shot_chart(player_id: UUID, request: Request):
+            """Every shot the player took across their analysed videos, with court positions.
+
+            Each shot has `x_m`/`y_m` on the court frame in `court`, `made` and a `result` of
+            made / missed / unknown (green, red, neither), plus the video it came from.
+            """
+
+            try:
+                return get_player_shot_chart_use_case.execute(
+                    user_id=str(request.state.user_id), player_id=str(player_id)
+                )
+            except PlayerError as exc:
+                return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
+
+    if get_player_analysis_stats_use_case is not None:
+
+        @router.get("/{player_id}/analysis-stats", response_model=None)
+        def get_player_analysis_stats(player_id: UUID, request: Request):
+            """Totals the video analyses measured for the player, across all their videos."""
+
+            try:
+                return get_player_analysis_stats_use_case.execute(
+                    user_id=str(request.state.user_id), player_id=str(player_id)
+                )
+            except PlayerError as exc:
+                return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
 
     @router.get("/{player_id}/matches", response_model=None)
     def get_player_matches(player_id: UUID, request: Request):
