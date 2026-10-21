@@ -8,6 +8,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Version of the court/zone rules the stored zones and shot values were computed with.
+# Bump it together with COURT_RULES_VERSION of the court module whenever those rules change,
+# so rows kept under older rules can be told apart (and rebuilt).
+CALC_VERSION = 2
+
 MADE = "made"
 MISSED = "missed"
 UNRESOLVED = "unresolved"
@@ -22,7 +27,8 @@ class PlayerGameRow:
     video_id: str
     owner_user_id: str
     jersey_number: str | None
-    seconds_observed: float | None
+    # Time the player was visible in the video, in seconds. Not minutes played.
+    seconds_on_screen: float | None
     distance_m: float | None
     points: int
     field_goals_made: int
@@ -44,7 +50,8 @@ class PlayerShotRow:
     owner_user_id: str
     shot_id: int | None
     outcome: str
-    points: int
+    # What the shot is worth by where it was taken (2 or 3), even when it missed.
+    shot_value: int
     zone: str | None
     shot_type: str | None
     distance_m: float | None
@@ -53,6 +60,27 @@ class PlayerShotRow:
     timestamp_seconds: float | None
     attribution: str | None
     needs_review: bool | None
+    outcome_source: str | None = None
+    outcome_confidence: str | None = None
+    release_timestamp_seconds: float | None = None
+    resolved_timestamp_seconds: float | None = None
+    shooter_candidates: list | None = None
+
+
+def without_nul(value):
+    """The value with every NUL character removed from its text.
+
+    Postgres refuses `\\x00` in text and JSONB, and the text here comes from model output and
+    user-entered titles, so it is stripped on the way in instead of failing the whole video.
+    """
+
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, list):
+        return [without_nul(item) for item in value]
+    if isinstance(value, dict):
+        return {without_nul(key): without_nul(item) for key, item in value.items()}
+    return value
 
 
 def shot_outcome(row: dict) -> str:
