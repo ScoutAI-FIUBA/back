@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -218,9 +220,17 @@ class RecordJobProgressUseCase:
     rejected. Returning the job unchanged keeps retries cheap and quiet.
     """
 
-    def __init__(self, *, jobs: JobRepositoryPort, uow: UnitOfWorkPort) -> None:
+    def __init__(
+        self,
+        *,
+        jobs: JobRepositoryPort,
+        uow: UnitOfWorkPort,
+        on_done: Callable[[ProcessingJob], None] | None = None,
+    ) -> None:
         self._jobs = jobs
         self._uow = uow
+        # Called once, after the commit, with the job that just finished. It must not raise.
+        self._on_done = on_done
 
     def execute(self, command: RecordJobProgressCommand) -> ProcessingJob:
         job = self._jobs.get_by_id_unscoped(job_id=command.job_id)
@@ -258,6 +268,8 @@ class RecordJobProgressUseCase:
                     code=INVALID_JOB_STATUS,
                     message=f"Cannot report status {command.status.value} for a job.",
                 )
+        if command.status is JobStatus.DONE and self._on_done is not None and updated is not None:
+            self._on_done(updated)
         return updated or job
 
 
@@ -286,9 +298,17 @@ class SetJobTeamSideUseCase:
     a roster player by jersey number.
     """
 
-    def __init__(self, *, jobs: JobRepositoryPort, team_access: TeamAccessPort) -> None:
+    def __init__(
+        self,
+        *,
+        jobs: JobRepositoryPort,
+        team_access: TeamAccessPort,
+        on_changed: Callable[[ProcessingJob], None] | None = None,
+    ) -> None:
         self._jobs = jobs
         self._team_access = team_access
+        # Called after the side is stored, with the updated job. It must not raise.
+        self._on_changed = on_changed
 
     def execute(self, *, user_id: str, team_id: str, job_id: str, our_team_side: int) -> ProcessingJob:
         self._team_access.assert_access(user_id=user_id, team_id=team_id)
@@ -297,6 +317,8 @@ class SetJobTeamSideUseCase:
         )
         if job is None:
             raise JobError(code=JOB_NOT_FOUND, message="Job not found.")
+        if self._on_changed is not None:
+            self._on_changed(job)
         return job
 
 
