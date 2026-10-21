@@ -35,6 +35,19 @@ THREE_POINT_RADIUS_M = 6.75
 CORNER_LANE_FROM_SIDELINE_M = 0.90
 CORNER_THREE_LATERAL_M = (COURT_WIDTH_M / 2) - CORNER_LANE_FROM_SIDELINE_M  # 6.60
 
+# Where the straight corner segment meets the arc, measured from the hoop towards
+# midcourt: sqrt(6.75^2 - 6.60^2) = 1.415 m. Past it the arc governs; at or behind
+# it only the straight line counts.
+CORNER_SEGMENT_END_M = math.sqrt(THREE_POINT_RADIUS_M**2 - CORNER_THREE_LATERAL_M**2)
+
+# Bump whenever the zone or points rules in this module change, so persisted
+# shot rows can be told apart from ones built under older rules.
+COURT_RULES_VERSION = 2
+
+# Float noise guard so a shot exactly on a line (which counts as a three) is not
+# demoted by a 1e-15 rounding error.
+_LINE_EPSILON_M = 1e-9
+
 TWO_POINTS = 2
 THREE_POINTS = 3
 
@@ -72,14 +85,19 @@ def describe_shot(court_xy: tuple[float, float]) -> ShotLocation:
     distance = math.hypot(x - hoop_x, y - hoop_y)
     lateral = abs(y - hoop_y)
 
-    # In the corners the line is straight and closer than the arc, so a shot can
-    # be worth three at less than the arc radius.
-    in_corner_lane = lateral >= CORNER_THREE_LATERAL_M
-    beyond_arc = distance >= THREE_POINT_RADIUS_M
+    # Depth of the shot from the hoop towards midcourt; negative means behind the hoop.
+    forward = (x - hoop_x) if hoop_x == HOME_HOOP[0] else (hoop_x - x)
 
-    if in_corner_lane and abs(x - hoop_x) <= THREE_POINT_RADIUS_M:
+    # The arc only exists in front of the hoop. Along the straight corner segment
+    # (up to where it meets the arc, and everywhere behind the hoop) the line is
+    # 6.60 m from the hoop axis, closer than the arc, so a shot can be worth three
+    # at less than the arc radius.
+    in_corner_lane = lateral >= CORNER_THREE_LATERAL_M - _LINE_EPSILON_M
+    beyond_arc = forward > 0 and distance >= THREE_POINT_RADIUS_M - _LINE_EPSILON_M
+
+    if in_corner_lane and forward <= CORNER_SEGMENT_END_M:
         points, zone = THREE_POINTS, "corner_three"
-    elif beyond_arc:
+    elif in_corner_lane or beyond_arc:
         points, zone = THREE_POINTS, "above_the_break_three"
     elif distance <= 1.8:
         points, zone = TWO_POINTS, "at_the_rim"
