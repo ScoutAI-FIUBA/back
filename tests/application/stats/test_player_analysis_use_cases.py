@@ -89,6 +89,16 @@ def test_a_shot_carries_its_detail_columns():
     assert shot.shooter_candidates == [{"track_id": 3}]
 
 
+def test_roster_ids_that_arrive_as_uuid_objects_are_kept_as_text():
+    # The roster repository hands out UUID objects; the rows and the repository compare text.
+    from uuid import UUID
+
+    pid = UUID("00000000-0000-4000-8000-000000000001")
+    _, analysis = _sync({"players": [{"roster_player_id": pid, "points": 1}], "shots": [_shot(1, roster_player_id=pid)]})
+    _, games, shots, *_ = analysis.calls[0]
+    assert [g.player_id for g in games] == [str(pid)] and [s.player_id for s in shots] == [str(pid)]
+
+
 def test_an_unknown_outcome_confidence_is_dropped_instead_of_failing_the_row():
     _, analysis = _sync({"players": [], "shots": [_shot(1, outcome_confidence="mystery")]})
     assert analysis.calls[0][2][0].outcome_confidence is None

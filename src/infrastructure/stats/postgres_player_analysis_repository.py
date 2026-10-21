@@ -138,13 +138,13 @@ class PostgresPlayerAnalysisRepository(PlayerAnalysisRepositoryPort):
                     {"v": video_id},
                 )
                 wanted = {str(row["player_id"]) for row in cur.fetchall()}
-                wanted.update(game.player_id for game in games)
+                wanted.update(str(game.player_id) for game in games)
                 # Players first, in a stable order, before any row that references them is
                 # written: two syncs touching the same players then queue up instead of
                 # deadlocking, and none of them can lose the other's totals.
                 affected = self._lock_players(cur, wanted)
-                games = [game for game in games if game.player_id in affected]
-                shots = [shot for shot in shots if shot.player_id in affected]
+                games = [game for game in games if str(game.player_id) in affected]
+                shots = [shot for shot in shots if str(shot.player_id) in affected]
 
                 cur.execute("DELETE FROM player_analysis_shots WHERE video_id = %(v)s::uuid", {"v": video_id})
                 cur.execute("DELETE FROM player_analysis_games WHERE video_id = %(v)s::uuid", {"v": video_id})

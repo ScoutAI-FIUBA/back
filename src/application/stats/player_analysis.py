@@ -197,6 +197,7 @@ class SyncPlayerAnalysisUseCase:
             player_id = player.get("roster_player_id")
             if not player_id:
                 continue
+            player_id = str(player_id)  # the roster repository hands out UUID objects
             entry = totals.get(player_id)
             if entry is None:
                 entry = totals[player_id] = {
@@ -229,6 +230,7 @@ class SyncPlayerAnalysisUseCase:
             player_id = row.get("roster_player_id")
             if not player_id:
                 continue
+            player_id = str(player_id)
             x, y = _finite(row.get("court_x_m")), _finite(row.get("court_y_m"))
             value, distance = _finite(row.get("points")), _finite(row.get("distance_m"))
             if row.get("court_x_m") is None or row.get("court_y_m") is None:
@@ -391,11 +393,11 @@ class GetPlayerShotChartUseCase:
         return {
             "player_id": player_id,
             "player": {
-                "id": player.id,
+                "id": str(player.id),
                 "first_name": player.first_name,
                 "last_name": player.last_name,
                 "jersey_number": player.jersey_number,
-                "team_id": player.team_id,
+                "team_id": None if player.team_id is None else str(player.team_id),
             },
             "calc_version": CALC_VERSION,
             "court": court_reference(),
