@@ -1,4 +1,4 @@
-from src.domain.stats.player_analysis import percentage, shot_outcome, stats_patch
+from src.domain.stats.player_analysis import CALC_VERSION, percentage, shot_outcome, stats_patch, without_nul
 
 
 def test_outcome_buckets_follow_the_pipeline_outcome_not_a_guess():
@@ -28,3 +28,13 @@ def test_nobody_who_never_shot_gets_a_percentage():
     assert stats_patch({"games": 0, "points": 0, "field_goals_made": 0, "field_goals_attempted": 0,
                         "two_point_made": 0, "two_point_attempted": 0, "three_point_made": 0,
                         "three_point_attempted": 0})["points"] == {"total": 0, "per_game": 0}
+
+
+def test_without_nul_cleans_every_text_value_but_nothing_else():
+    assert without_nul("co\x00rner") == "corner"
+    assert without_nul(None) is None and without_nul(3) == 3
+    assert without_nul([{"a\x00": "b\x00", "n": 1.5}]) == [{"a": "b", "n": 1.5}]
+
+
+def test_the_calc_version_is_the_court_rules_generation():
+    assert CALC_VERSION == 2

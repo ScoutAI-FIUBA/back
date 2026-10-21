@@ -78,6 +78,7 @@ from src.application.jobs.use_cases import (
 from src.application.stats.player_analysis import (
     GetPlayerAnalysisStatsUseCase,
     GetPlayerShotChartUseCase,
+    ResyncTeamAnalysesUseCase,
     SyncPlayerAnalysisUseCase,
     safe_sync,
 )
@@ -297,6 +298,7 @@ class HttpDependencies:
     get_player_shot_chart_use_case: GetPlayerShotChartUseCase
     get_player_analysis_stats_use_case: GetPlayerAnalysisStatsUseCase
     sync_player_analysis_use_case: SyncPlayerAnalysisUseCase
+    resync_team_analyses_use_case: ResyncTeamAnalysesUseCase
     processing_callback_token: str
     export_clip_item_use_case: ExportClipItemUseCase
     access_token_resolver: JWTAccessTokenResolver
@@ -440,8 +442,14 @@ def build_http_dependencies(
         jobs=jobs_repo, game_stats=game_stats_use_case.execute, analysis=player_analysis_repo
     )
 
-    def _sync_player_analysis(job) -> None:
-        safe_sync(sync_player_analysis_use_case, job.id)
+    resync_team_analyses_use_case = ResyncTeamAnalysesUseCase(jobs=jobs_repo, sync=sync_player_analysis_use_case)
+
+    def _sync_player_analysis(job) -> str | None:
+        result = safe_sync(sync_player_analysis_use_case, job.id)
+        return None if result is None else result.status
+
+    def _refresh_player_stats_of_video(video_id: str) -> None:
+        player_analysis_repo.refresh_players_for_video(video_id)
 
     add_clip_batch_use_case = AddClipBatchUseCase(
         collections=clip_collections_repo,
@@ -610,6 +618,7 @@ def build_http_dependencies(
             storage=video_storage,
             team_access=team_access,
             uow=uow,
+            on_deleted=_refresh_player_stats_of_video,
         ),
         create_clip_collection_use_case=CreateClipCollectionUseCase(
             collections=clip_collections_repo,
@@ -675,6 +684,7 @@ def build_http_dependencies(
             players=players_repo, analysis=player_analysis_repo
         ),
         sync_player_analysis_use_case=sync_player_analysis_use_case,
+        resync_team_analyses_use_case=resync_team_analyses_use_case,
         court_positions_use_case=GetCourtPositionsUseCase(
             jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
         ),

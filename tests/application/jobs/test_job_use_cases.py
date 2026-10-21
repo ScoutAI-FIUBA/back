@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 from src.application.jobs.errors import (
@@ -25,6 +26,7 @@ from src.application.jobs.use_cases import (
     ListVideoJobsUseCase,
     RecordJobProgressCommand,
     RecordJobProgressUseCase,
+    SetJobTeamSideUseCase,
     SubmitProcessingJobCommand,
     STALE_ACTIVE_JOB_HEARTBEAT,
     STALE_ACTIVE_JOB_MAX_RUNTIME,
@@ -118,6 +120,14 @@ class FakeJobRepository:
 
     def list_by_video(self, *, video_id, team_id):
         return [j for j in self.jobs.values() if j.video_id == video_id]
+
+    def set_our_team_side(self, *, job_id, team_id, our_team_side):
+        job = self.jobs.get(job_id)
+        if job is None:
+            return None
+        updated = replace(job, our_team_side=our_team_side)
+        self.jobs[job_id] = updated
+        return updated
 
     def find_active_for_video(self, *, video_id):
         return next((j for j in self.jobs.values() if j.video_id == video_id and j.status.is_active), None)
@@ -662,6 +672,39 @@ class TestProgressPhase(unittest.TestCase):
 
         self.assertEqual(_job_to_dict(build_job(progress_phase="identity"))["progress_phase"], "identity")
         self.assertIsNone(_job_to_dict(build_job())["progress_phase"])
+
+
+class TestSetJobTeamSide(unittest.TestCase):
+    def _jobs(self) -> FakeJobRepository:
+        jobs = FakeJobRepository()
+        jobs.jobs[JOB_ID] = build_job(JobStatus.DONE)
+        return jobs
+
+    def test_execute_keeps_returning_the_job_and_runs_the_hook(self) -> None:
+        seen = []
+        use_case = SetJobTeamSideUseCase(
+            jobs=self._jobs(), team_access=FakeTeamAccess(), on_changed=lambda job: seen.append(job.id) or "ok"
+        )
+        job = use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID, our_team_side=1)
+        self.assertEqual((job.our_team_side, seen), (1, [JOB_ID]))
+
+    def test_execute_and_sync_also_returns_what_the_hook_reported(self) -> None:
+        use_case = SetJobTeamSideUseCase(
+            jobs=self._jobs(), team_access=FakeTeamAccess(), on_changed=lambda job: "not_latest"
+        )
+        job, status = use_case.execute_and_sync(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID, our_team_side=0)
+        self.assertEqual((job.our_team_side, status), (0, "not_latest"))
+
+    def test_without_a_hook_the_status_is_none(self) -> None:
+        use_case = SetJobTeamSideUseCase(jobs=self._jobs(), team_access=FakeTeamAccess())
+        self.assertIsNone(use_case.execute_and_sync(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID, our_team_side=1)[1])
+
+    def test_an_unknown_job_is_not_found_and_runs_no_hook(self) -> None:
+        seen = []
+        use_case = SetJobTeamSideUseCase(jobs=FakeJobRepository(), team_access=FakeTeamAccess(), on_changed=seen.append)
+        with self.assertRaises(JobError) as caught:
+            use_case.execute_and_sync(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID, our_team_side=1)
+        self.assertEqual((caught.exception.code, seen), (JOB_NOT_FOUND, []))
 
 
 class TestJobStatus(unittest.TestCase):

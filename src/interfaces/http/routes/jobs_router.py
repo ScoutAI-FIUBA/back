@@ -201,13 +201,15 @@ def create_jobs_router(
         """
 
         try:
-            job = set_team_side_use_case.execute(
+            job, sync_status = set_team_side_use_case.execute_and_sync(
                 user_id=str(request.state.user_id),
                 team_id=str(team_id),
                 job_id=str(job_id),
                 our_team_side=payload.team_side,
             )
-            return {"job": _job_to_dict(job)}
+            # What happened to the player stats: ok, failed, not_latest (an older analysis of
+            # the video, ignored), side_changed, no_side, not_ready; null when nothing is wired.
+            return {"job": _job_to_dict(job), "player_stats_sync": sync_status}
         except JobError as exc:
             return JSONResponse(status_code=job_error_http_status(exc.code), content=exc.to_envelope())
 

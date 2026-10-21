@@ -537,6 +537,33 @@ class TestVideoUseCases(unittest.TestCase):
         self.assertEqual(result, {"deleted": True, "compensation_pending": False})
         self.assertEqual(storage.deleted, ["videos/team-1/v1"])
 
+    def test_delete_tells_the_hook_which_video_went_and_never_fails_because_of_it(self) -> None:
+        for hook_fails in (False, True):
+            repo = _Repo()
+            repo.by_id["v1"] = _video(video_id="v1", team_id="team-1", status=VideoStatus.READY)
+            seen: list[str] = []
+
+            def _hook(video_id: str, fails=hook_fails) -> None:
+                seen.append(video_id)
+                if fails:
+                    raise RuntimeError("player stats refresh failed")
+
+            use_case = DeleteVideoUseCase(
+                videos=repo, storage=_Storage(), team_access=_TeamAccess(), uow=_Uow(), on_deleted=_hook
+            )
+            result = use_case.execute(DeleteVideoCommand(user_id="u1", team_id="team-1", video_id="v1"))
+            self.assertEqual(result, {"deleted": True, "compensation_pending": False})
+            self.assertEqual(seen, ["v1"])
+
+    def test_delete_does_not_call_the_hook_for_a_missing_video(self) -> None:
+        seen: list[str] = []
+        use_case = DeleteVideoUseCase(
+            videos=_Repo(), storage=_Storage(), team_access=_TeamAccess(), uow=_Uow(), on_deleted=seen.append
+        )
+        with self.assertRaises(VideoError):
+            use_case.execute(DeleteVideoCommand(user_id="u1", team_id="team-1", video_id="nope"))
+        self.assertEqual(seen, [])
+
 
 if __name__ == "__main__":
     unittest.main()

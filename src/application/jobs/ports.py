@@ -77,6 +77,10 @@ class JobRepositoryPort(ABC):
     def list_done_by_team(self, *, team_id: str) -> list[ProcessingJob]: ...
 
     @abstractmethod
+    def list_done_with_side_by_team(self, *, team_id: str, limit: int) -> list[ProcessingJob]:
+        """The team's most recent DONE jobs that have a team side set, newest first."""
+
+    @abstractmethod
     def list_by_video(self, *, video_id: str, team_id: str) -> list[ProcessingJob]: ...
 
     @abstractmethod

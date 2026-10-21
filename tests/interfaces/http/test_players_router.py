@@ -126,7 +126,9 @@ class _GetPlayerMatchesUseCase:
         ]
 
 
-def build_client(*, user_id: str = "scout-1", team_repo: _TeamRepo | None = None) -> tuple[TestClient, _PlayerRepo]:
+def build_client(
+    *, user_id: str = "scout-1", team_repo: _TeamRepo | None = None, resync_team=None
+) -> tuple[TestClient, _PlayerRepo]:
     repo = _PlayerRepo()
     teams = team_repo or _TeamRepo()
     app = FastAPI()
@@ -146,6 +148,7 @@ def build_client(*, user_id: str = "scout-1", team_repo: _TeamRepo | None = None
             assign_player_team_use_case=AssignPlayerTeamUseCase(players=repo, teams=teams, uow=_Uow()),
             get_player_stats_use_case=GetPlayerStatsUseCase(players=repo),
             get_player_matches_use_case=_GetPlayerMatchesUseCase(),
+            resync_team=resync_team,
         )
     )
     return TestClient(app), repo

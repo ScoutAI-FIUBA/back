@@ -262,6 +262,19 @@ class PostgresJobRepository:
             )
             return [job for job in (_row_to_job(row) for row in cur.fetchall()) if job is not None]
 
+    def list_done_with_side_by_team(self, *, team_id: str, limit: int) -> list[ProcessingJob]:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT * FROM processing_jobs
+                 WHERE team_id = %(team_id)s::uuid AND status = 'DONE' AND our_team_side IS NOT NULL
+                 ORDER BY created_at DESC
+                 LIMIT %(limit)s
+                """,
+                {"team_id": team_id, "limit": limit},
+            )
+            return [job for job in (_row_to_job(row) for row in cur.fetchall()) if job is not None]
+
     def list_by_video(self, *, video_id: str, team_id: str) -> list[ProcessingJob]:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
