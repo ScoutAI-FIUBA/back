@@ -24,6 +24,7 @@ from src.application.stats.aggregation import (
     build_possession_events,
     build_shot_chart,
     build_shot_events,
+    build_v3_events,
     number_by_stable,
     number_by_track,
     outcome_bucket,
@@ -53,6 +54,7 @@ SUMMARY_FILE = "player_summary.json"
 PATHS_FILE = "player_paths.jsonl"
 RESULTS_FILE = "results.json"
 POSSESSION_EVENTS_FILE = "possession_events.jsonl"
+POSSESSION_V3_FILE = "possession_events_v3.jsonl"
 POSITIONS_SOURCE_SUMMARY = "player_summary"
 POSITIONS_SOURCE_TRACKS = "projected_tracks"
 # The two pipelines name their position output differently, and use a different
@@ -947,7 +949,7 @@ class GetEventsUseCase:
             summary_players=summary_players,
         )
 
-        possession_events, possession_truncated = self._possession_events(key, video["fps"])
+        possession_events, possession_truncated, possession_source = self._possession_events(key, video["fps"])
 
         # Shots are the dependable part, so they win the room when over the cap.
         shot_events = shot_events[:MAX_EVENTS]
@@ -970,20 +972,29 @@ class GetEventsUseCase:
                 "shot_events": len(shot_events),
                 "experimental_events": len(possession_events),
                 "possession_input_truncated": possession_truncated,
+                "possession_source": possession_source,
                 "max_events": MAX_EVENTS,
             },
         }
 
-    def _possession_events(self, results_key: str, fps: float | None) -> tuple[list[dict], bool]:
-        """(events, input_was_cut_short); empty when the job has no possession file."""
+    def _possession_events(self, results_key: str, fps: float | None) -> tuple[list[dict], bool, str]:
+        """(events, input_was_cut_short, source); v3 first, legacy when v3 yields nothing."""
 
+        v3_events, v3_truncated = self._read_possession(results_key, POSSESSION_V3_FILE, build_v3_events, fps)
+        if v3_events:
+            return v3_events, v3_truncated, "v3"
+        events, truncated = self._read_possession(results_key, POSSESSION_EVENTS_FILE, build_possession_events, fps)
+        events = [{**event, "source": "legacy_holder_change"} for event in events]
+        return events, truncated, "legacy" if events else "none"
+
+    def _read_possession(self, results_key: str, filename: str, build, fps: float | None) -> tuple[list[dict], bool]:
         try:
             rows = self._artifacts.read_jsonl(
                 results_key=results_key,
-                filename=POSSESSION_EVENTS_FILE,
+                filename=filename,
                 max_lines=MAX_POSSESSION_RECORDS,
             )
         except ArtifactReadError:
             # Optional and experimental: an oversized file must not hide the shots.
             return [], False
-        return build_possession_events(rows, fps=fps), len(rows) >= MAX_POSSESSION_RECORDS
+        return build(rows, fps=fps), len(rows) >= MAX_POSSESSION_RECORDS
