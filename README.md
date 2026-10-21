@@ -116,12 +116,39 @@ analysis measured for each roster player is kept in `player_analysis_games` and
 `players.stats` are filled (`games_played`, `points`, `field_goals`, `two_point`, `three_point`;
 rebounds, assists, steals, blocks, turnovers and free throws are not measured and stay 0).
 
-- Only shots by roster players are kept, tied by confirmed jersey number on the job's marked team side.
-- Only the latest finished analysis of each video counts, so analysing a video twice never double-counts.
-- Rows ignore soft-deleted videos and are removed with the player or the job.
-- A problem while keeping these rows never fails the job callback. Analyses that finished before this existed are
-  built the next time the scout saves "our team" on them (re-selecting the side triggers the same sync).
-- `players.stats` stores whole-number per-game averages (the existing contract); exact figures are in `analysis-stats`.
+- Only shots by roster players are kept, tied by confirmed jersey number on the job's marked team side. If several
+  tracks of one video link to the same roster player, their numbers are added up into one row for that video.
+- Rows are replaced per video by the video's latest DONE job, so analysing a video twice never double-counts.
+  Setting the side on an older job of a video reports `player_stats_sync: "not_latest"` and changes nothing.
+- A re-run's DONE callback clears the video's player rows (sides are not stable between runs: side 0 of the old run
+  is not side 0 of the new one) until the scout sets "our team" on the new job; the old numbers do not linger.
+- A jersey or roster change (creating, editing, moving to another team or deleting a player) triggers a background
+  re-sync of that team's analyses (the 20 most recent DONE jobs that have a side; best effort, never fails the
+  request). Older analyses keep their previous links until the side is saved again, so the stored numbers can lag
+  behind the per-video screen until the re-sync has run.
+- Syncs are serialised per video in the database (advisory lock) and re-check, inside that lock, that the job is still
+  the latest DONE one and that its side did not change meanwhile; `players.stats` is recomputed under a row lock so
+  parallel syncs of different videos of one player never lose each other's totals. Soft-deleting a video refreshes
+  its players' `players.stats` (hard deletes of jobs and videos are not exposed by the API).
+- Rows ignore soft-deleted videos and are removed with the player or the job. A shot whose coordinates, shot value
+  or distance are missing or not finite is not stored (and counted as skipped in the sync result).
+- A problem while keeping these rows never fails the job callback. `PUT /jobs/{id}/our-team` adds
+  `"player_stats_sync"` to its response: `ok`, `no_side`, `not_latest`, `side_changed`, `not_ready`, `job_not_found`
+  or `failed` (the sync is best effort; `failed` is logged and can be retried by saving the side again).
+- Units. `players.stats.*.percentage` keeps the existing integer percent (0 to 100) and its per-game values are whole
+  numbers; `GET /players/{id}/analysis-stats` reports every shooting `pct` as a fraction (0 to 1, or null without
+  attempts), like the other stats endpoints, and exact totals.
+- `shot_value` is what a shot is worth by where it was taken (2 or 3), also when it missed; it is not points scored.
+  `seconds_on_screen` is the time the player was visible in the video, in seconds, not minutes played.
+  `timestamp_seconds` counts from the start of the analysed video. `calc_version` is the version of the court/zone
+  rules the rows were computed with.
+- `GET /players/{id}/shot-chart` returns the player, the court, every shot (each with a `shot_key` unique among the
+  player's shots, outcome confidence/source and release/resolved timestamps) and a coverage summary. Both endpoints
+  have pydantic response models in `src/interfaces/http/schemas/player_analysis.py`.
+- Deploy note: there is no backfill command. Analyses that finished before this existed are built the next time the
+  scout saves "our team" on them. Development databases that applied an earlier version of
+  `006_player_analysis_stats.sql` must be recreated: the migration changed before it shipped (it is not edited by a
+  later migration).
 
 - Players contract and examples: `specs/api/players.md`.
 - Player-team association persistence: `src/infrastructure/team/migrations/002_player_team_association.sql` adds nullable `players.team_id` foreign key to `teams(id)`.
