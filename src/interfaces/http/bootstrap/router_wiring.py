@@ -57,6 +57,9 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             assign_player_team_use_case=deps.assign_player_team_use_case,
             get_player_stats_use_case=deps.get_player_stats_use_case,
             get_player_matches_use_case=deps.get_player_matches_use_case,
+            get_player_shot_chart_use_case=deps.get_player_shot_chart_use_case,
+            get_player_analysis_stats_use_case=deps.get_player_analysis_stats_use_case,
+            resync_team=deps.resync_team_analyses_use_case,
         )
     )
     app.include_router(

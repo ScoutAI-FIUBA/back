@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import contextlib
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -23,6 +25,8 @@ from src.application.video.ports import (
     VideoStoragePort,
 )
 from src.domain.video.entities import Video, VideoStatus
+
+logger = logging.getLogger(__name__)
 
 
 def _thumbnail_key(*, team_id: str, video_id: str) -> str:
@@ -301,11 +305,15 @@ class DeleteVideoUseCase:
         storage: VideoStoragePort,
         team_access: TeamAccessPort,
         uow: UnitOfWorkPort,
+        on_deleted: Callable[[str], None] | None = None,
     ) -> None:
         self._videos = videos
         self._storage = storage
         self._team_access = team_access
         self._uow = uow
+        # Called with the video id once it is soft-deleted (the player stats stop counting
+        # it). Best effort: it must never fail the delete.
+        self._on_deleted = on_deleted
 
     def execute(self, command: DeleteVideoCommand) -> dict[str, object]:
         self._team_access.assert_access(user_id=command.user_id, team_id=command.team_id)
@@ -313,6 +321,11 @@ class DeleteVideoUseCase:
             video = self._videos.soft_delete(video_id=command.video_id, team_id=command.team_id)
         if video is None:
             raise VideoError(code=VIDEO_NOT_FOUND, message="Video not found")
+        if self._on_deleted is not None:
+            try:
+                self._on_deleted(command.video_id)
+            except Exception:  # noqa: BLE001 - best effort, see __init__
+                logger.exception("Could not refresh player stats after deleting video %s", command.video_id)
         try:
             self._storage.delete_video(video.storage_key)
         except Exception as exc:

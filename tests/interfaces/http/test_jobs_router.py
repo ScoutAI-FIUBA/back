@@ -257,3 +257,40 @@ class TestCallbackPathIsExemptFromUserAuth(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _SetsSide:
+    def __init__(self, sync_status):
+        self.sync_status = sync_status
+        self.calls = []
+
+    def execute_and_sync(self, **kwargs):
+        self.calls.append(kwargs)
+        return build_job(our_team_side=kwargs["our_team_side"]), self.sync_status
+
+
+class TestSetOurTeamEndpoint(unittest.TestCase):
+    def test_the_response_reports_what_happened_to_the_player_stats(self) -> None:
+        setter = _SetsSide("not_latest")
+        client = build_client(set_team_side=setter)
+        response = client.put(f"/jobs/{JOB_ID}/our-team?team_id={TEAM_ID}", json={"team_side": 1})
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["player_stats_sync"], "not_latest")
+        self.assertEqual(body["job"]["our_team_side"], 1)
+        self.assertEqual(setter.calls[0]["our_team_side"], 1)
+
+    def test_it_is_null_when_no_sync_is_wired(self) -> None:
+        client = build_client(set_team_side=_SetsSide(None))
+        response = client.put(f"/jobs/{JOB_ID}/our-team?team_id={TEAM_ID}", json={"team_side": 0})
+        self.assertIsNone(response.json()["player_stats_sync"])
+
+    def test_a_missing_job_keeps_the_error_envelope(self) -> None:
+        class _Missing:
+            def execute_and_sync(self, **_):
+                raise JobError(code=JOB_NOT_FOUND, message="Job not found.")
+
+        response = build_client(set_team_side=_Missing()).put(
+            f"/jobs/{JOB_ID}/our-team?team_id={TEAM_ID}", json={"team_side": 0}
+        )
+        self.assertEqual((response.status_code, response.json()["error"]["code"]), (404, JOB_NOT_FOUND))

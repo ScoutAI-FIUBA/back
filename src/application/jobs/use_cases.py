@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -218,9 +220,17 @@ class RecordJobProgressUseCase:
     rejected. Returning the job unchanged keeps retries cheap and quiet.
     """
 
-    def __init__(self, *, jobs: JobRepositoryPort, uow: UnitOfWorkPort) -> None:
+    def __init__(
+        self,
+        *,
+        jobs: JobRepositoryPort,
+        uow: UnitOfWorkPort,
+        on_done: Callable[[ProcessingJob], None] | None = None,
+    ) -> None:
         self._jobs = jobs
         self._uow = uow
+        # Called once, after the commit, with the job that just finished. It must not raise.
+        self._on_done = on_done
 
     def execute(self, command: RecordJobProgressCommand) -> ProcessingJob:
         job = self._jobs.get_by_id_unscoped(job_id=command.job_id)
@@ -258,6 +268,8 @@ class RecordJobProgressUseCase:
                     code=INVALID_JOB_STATUS,
                     message=f"Cannot report status {command.status.value} for a job.",
                 )
+        if command.status is JobStatus.DONE and self._on_done is not None and updated is not None:
+            self._on_done(updated)
         return updated or job
 
 
@@ -286,18 +298,38 @@ class SetJobTeamSideUseCase:
     a roster player by jersey number.
     """
 
-    def __init__(self, *, jobs: JobRepositoryPort, team_access: TeamAccessPort) -> None:
+    def __init__(
+        self,
+        *,
+        jobs: JobRepositoryPort,
+        team_access: TeamAccessPort,
+        on_changed: Callable[[ProcessingJob], str | None] | None = None,
+    ) -> None:
         self._jobs = jobs
         self._team_access = team_access
+        # Called after the side is stored, with the updated job. It must not raise; it may
+        # return a short status of what it did (the player stats sync status), which
+        # `execute_and_sync` hands back.
+        self._on_changed = on_changed
 
     def execute(self, *, user_id: str, team_id: str, job_id: str, our_team_side: int) -> ProcessingJob:
+        return self.execute_and_sync(
+            user_id=user_id, team_id=team_id, job_id=job_id, our_team_side=our_team_side
+        )[0]
+
+    def execute_and_sync(
+        self, *, user_id: str, team_id: str, job_id: str, our_team_side: int
+    ) -> tuple[ProcessingJob, str | None]:
+        """Like `execute`, plus what the follow-up sync reported (None when there is none)."""
+
         self._team_access.assert_access(user_id=user_id, team_id=team_id)
         job = self._jobs.set_our_team_side(
             job_id=job_id, team_id=team_id, our_team_side=our_team_side
         )
         if job is None:
             raise JobError(code=JOB_NOT_FOUND, message="Job not found.")
-        return job
+        status = self._on_changed(job) if self._on_changed is not None else None
+        return job, status
 
 
 # How long a results download link stays valid. Long enough to load the analysis

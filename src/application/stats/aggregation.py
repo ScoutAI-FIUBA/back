@@ -733,12 +733,91 @@ def build_shot_events(
     return events
 
 
+# A confirmed holder that reappears after a longer silence is not evidence of a pass.
+MAX_PASS_GAP_SECONDS = 1.5
+
+_V3_TYPES = {
+    "PASS": "pass",
+    "STEAL": "steal",
+    "TURNOVER": "turnover",
+    "LOSS_OF_CONTROL": "loss_of_control",
+}
+
+
+def _number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def build_v3_events(rows: list[dict], *, fps: float | None) -> list[dict]:
+    """Experimental possession events from `possession_events_v3.jsonl`.
+
+    Each transition writes a bare `possession_transfer` row plus one classified
+    row (PASS / STEAL / TURNOVER / LOSS_OF_CONTROL / UNKNOWN); the classified row
+    is the one that counts. An UNKNOWN between two known, different teams is kept
+    as a `possession_change`; any other UNKNOWN is dropped. Malformed rows are
+    skipped, never raised on.
+    """
+
+    classified: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        transition_id = row.get("transition_id")
+        if not isinstance(transition_id, str) or not transition_id:
+            continue
+        if row.get("event_type") in (None, "possession_transfer"):
+            continue
+        classified[transition_id] = row
+
+    events: list[dict] = []
+    for transition_id, row in classified.items():
+        event_type = row.get("event_type")
+        from_team, to_team = row.get("source_team_id"), row.get("destination_team_id")
+        if event_type in _V3_TYPES:
+            kind = _V3_TYPES[event_type]
+        elif event_type == "UNKNOWN" and from_team is not None and to_team is not None and from_team != to_team:
+            kind = "possession_change"
+        else:
+            continue
+        end = _number(row.get("timestamp_end"))
+        if end is None:
+            frame_end = _number(row.get("frame_end"))
+            if frame_end is None or not fps:
+                continue
+            end = round(frame_end / fps, 3)
+        reasons = row.get("reason_codes")
+        confidence = row.get("confidence")
+        events.append(
+            {
+                "type": kind,
+                "experimental": True,
+                "source": "v3",
+                "event_id": transition_id,
+                "timestamp_seconds": end,
+                "start_timestamp_seconds": _number(row.get("timestamp_start")),
+                "from_stable_player_id": row.get("source_holder"),
+                "to_stable_player_id": row.get("destination_holder"),
+                "from_team_id": from_team,
+                "to_team_id": to_team,
+                "reason_codes": list(reasons) if isinstance(reasons, list) else [],
+                "confidence": confidence if isinstance(confidence, (int, float)) else None,
+            }
+        )
+    events.sort(key=lambda event: (event["timestamp_seconds"], event["event_id"]))
+    return events
+
+
 def build_possession_events(rows: list[dict], *, fps: float | None) -> list[dict]:
     """Experimental ball-handler changes, from the per-frame possession output.
 
     Only frames the pipeline CONFIRMED a holder on count; a change of confirmed
     holder is a `pass` when both are on the same team and a `possession_transfer`
-    otherwise. These are a hint for a timeline and feed no statistic.
+    otherwise. After a gap of more than MAX_PASS_GAP_SECONDS since the previous
+    confirmed frame it is always an `uncertain` `possession_transfer`, since the
+    ball was out of sight in between. These are a hint for a timeline and feed no
+    statistic.
     """
 
     events: list[dict] = []
@@ -757,10 +836,15 @@ def build_possession_events(rows: list[dict], *, fps: float | None) -> list[dict
                 timestamp = round(row["frame_index"] / fps, 3)
             if timestamp is not None:
                 from_team, to_team = previous["team_id"], row.get("team_id")
+                gap = None if previous["timestamp"] is None else timestamp - previous["timestamp"]
+                uncertain = gap is None or gap > MAX_PASS_GAP_SECONDS
                 events.append(
                     {
-                        "type": "pass" if from_team is not None and from_team == to_team else "possession_transfer",
+                        "type": "pass"
+                        if not uncertain and from_team is not None and from_team == to_team
+                        else "possession_transfer",
                         "experimental": True,
+                        "uncertain": uncertain,
                         "event_id": f"possession-{row.get('frame_index')}",
                         "timestamp_seconds": timestamp,
                         "end_timestamp_seconds": None,
@@ -771,7 +855,11 @@ def build_possession_events(rows: list[dict], *, fps: float | None) -> list[dict
                         "confidence": row.get("confidence"),
                     }
                 )
+        frame_time = row.get("timestamp_seconds")
+        if frame_time is None and fps and row.get("frame_index") is not None:
+            frame_time = round(row["frame_index"] / fps, 3)
         previous = {
+            "timestamp": frame_time,
             "holder": holder,
             "stable_player_id": row.get("stable_player_id"),
             "team_id": row.get("team_id"),

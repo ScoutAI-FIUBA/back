@@ -75,6 +75,13 @@ from src.application.jobs.use_cases import (
     SetJobTeamSideUseCase,
     SubmitProcessingJobUseCase,
 )
+from src.application.stats.player_analysis import (
+    GetPlayerAnalysisStatsUseCase,
+    GetPlayerShotChartUseCase,
+    ResyncTeamAnalysesUseCase,
+    SyncPlayerAnalysisUseCase,
+    safe_sync,
+)
 from src.application.stats.use_cases import (
     GetCourtPositionsUseCase,
     GetEventsUseCase,
@@ -116,6 +123,7 @@ from src.infrastructure.jobs.http_processing_service import (
     HttpProcessingService,
     UnconfiguredProcessingService,
 )
+from src.infrastructure.stats.postgres_player_analysis_repository import PostgresPlayerAnalysisRepository
 from src.infrastructure.stats.r2_artifact_reader import R2ArtifactReader, UnavailableArtifactReader
 from src.infrastructure.jobs.r2_artifact_urls import R2ArtifactUrls, UnavailableArtifactUrls
 from src.infrastructure.jobs.postgres_job_repository import (
@@ -287,6 +295,10 @@ class HttpDependencies:
     team_sides_use_case: GetTeamSidesUseCase
     similar_clips_use_case: GetSimilarClipsUseCase
     events_use_case: GetEventsUseCase
+    get_player_shot_chart_use_case: GetPlayerShotChartUseCase
+    get_player_analysis_stats_use_case: GetPlayerAnalysisStatsUseCase
+    sync_player_analysis_use_case: SyncPlayerAnalysisUseCase
+    resync_team_analyses_use_case: ResyncTeamAnalysesUseCase
     processing_callback_token: str
     export_clip_item_use_case: ExportClipItemUseCase
     access_token_resolver: JWTAccessTokenResolver
@@ -419,6 +431,26 @@ def build_http_dependencies(
     clock = SystemClock()
     ids = UUIDIds()
     uow = PsycopgUnitOfWork(conn)
+    # What each analysis measured per roster player is kept when a job finishes and when the
+    # scout marks their team. It reuses the per-video box score computation, and a failure
+    # here must never fail the job callback or the team-side request.
+    player_analysis_repo = PostgresPlayerAnalysisRepository(connection=conn)
+    game_stats_use_case = GetGameStatsUseCase(
+        jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access, roster=players_repo
+    )
+    sync_player_analysis_use_case = SyncPlayerAnalysisUseCase(
+        jobs=jobs_repo, game_stats=game_stats_use_case.execute, analysis=player_analysis_repo
+    )
+
+    resync_team_analyses_use_case = ResyncTeamAnalysesUseCase(jobs=jobs_repo, sync=sync_player_analysis_use_case)
+
+    def _sync_player_analysis(job) -> str | None:
+        result = safe_sync(sync_player_analysis_use_case, job.id)
+        return None if result is None else result.status
+
+    def _refresh_player_stats_of_video(video_id: str) -> None:
+        player_analysis_repo.refresh_players_for_video(video_id)
+
     add_clip_batch_use_case = AddClipBatchUseCase(
         collections=clip_collections_repo,
         videos=videos_repo,
@@ -586,6 +618,7 @@ def build_http_dependencies(
             storage=video_storage,
             team_access=team_access,
             uow=uow,
+            on_deleted=_refresh_player_stats_of_video,
         ),
         create_clip_collection_use_case=CreateClipCollectionUseCase(
             collections=clip_collections_repo,
@@ -631,7 +664,9 @@ def build_http_dependencies(
             team_access=team_access,
             uow=uow,
         ),
-        record_job_progress_use_case=RecordJobProgressUseCase(jobs=jobs_repo, uow=uow),
+        record_job_progress_use_case=RecordJobProgressUseCase(
+            jobs=jobs_repo, uow=uow, on_done=_sync_player_analysis
+        ),
         get_job_results_use_case=GetJobResultsUseCase(
             jobs=jobs_repo,
             urls=artifact_urls,
@@ -640,11 +675,16 @@ def build_http_dependencies(
         set_job_team_side_use_case=SetJobTeamSideUseCase(
             jobs=jobs_repo,
             team_access=team_access,
+            on_changed=_sync_player_analysis,
         ),
         processing_callback_token=(os.getenv("PROCESSING_CALLBACK_TOKEN") or "").strip(),
-        game_stats_use_case=GetGameStatsUseCase(
-            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access, roster=players_repo
+        game_stats_use_case=game_stats_use_case,
+        get_player_shot_chart_use_case=GetPlayerShotChartUseCase(players=players_repo, analysis=player_analysis_repo),
+        get_player_analysis_stats_use_case=GetPlayerAnalysisStatsUseCase(
+            players=players_repo, analysis=player_analysis_repo
         ),
+        sync_player_analysis_use_case=sync_player_analysis_use_case,
+        resync_team_analyses_use_case=resync_team_analyses_use_case,
         court_positions_use_case=GetCourtPositionsUseCase(
             jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
         ),

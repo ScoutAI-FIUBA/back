@@ -446,7 +446,7 @@ class TestEvents(unittest.TestCase):
                     "confidence": 0.8}
         return [
             row(0, "unknown"), row(30, "confirmed", "player-010", 1),
-            row(60, "lost"), row(90, "confirmed", "player-012", 1),
+            row(45, "lost"), row(60, "confirmed", "player-012", 1),
             row(150, "confirmed", "player-011", 0), row(160, "confirmed", "player-011", 0),
         ]
 
@@ -479,11 +479,11 @@ class TestEvents(unittest.TestCase):
         self.assertIsNone(event["court_x_m"])
 
     def test_possession_events_are_experimental_and_ordered_with_shots(self) -> None:
-        reader = v2_reader([shot(release_timestamp_seconds=2.5)])
+        reader = v2_reader([shot(release_timestamp_seconds=1.5)])
         reader.jsonl["possession_events.jsonl"] = self.possession()
         result = self.run_use_case(reader)
         kinds = [(e["type"], e["timestamp_seconds"]) for e in result["events"]]
-        self.assertEqual(kinds, [("shot", 2.5), ("pass", 3.0), ("possession_transfer", 5.0)])
+        self.assertEqual(kinds, [("shot", 1.5), ("pass", 2.0), ("possession_transfer", 5.0)])
         possession = [e for e in result["events"] if e["type"] != "shot"]
         self.assertTrue(all(e["experimental"] for e in possession))
         self.assertEqual(possession[0]["from_stable_player_id"], "player-010")
