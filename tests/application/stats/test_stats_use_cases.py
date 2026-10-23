@@ -464,6 +464,23 @@ class TestGetCourtPositions(unittest.TestCase):
         self.assertEqual(result["players"][0]["team_id"], 1)
         self.assertEqual(result["players"][0]["jersey_number"], "22")
 
+    def test_a_storage_failure_reading_the_labels_is_a_clean_error_not_a_crash(self) -> None:
+        """teams.json / numbers.json are read after the rows; a transient storage error there
+        must surface as the same domain error as an unreadable positions file."""
+
+        class LabelsFail(FakeReader):
+            def read_json(self, *, results_key, filename):
+                raise ArtifactReadError("storage unavailable")
+
+        use_case = GetCourtPositionsUseCase(
+            jobs=FakeJobs(build_job()),
+            artifacts=LabelsFail(rows=[position_row(0, 9, 6.4, 10.6)]),
+            team_access=FakeAccess(),
+        )
+        with self.assertRaises(JobError) as caught:
+            use_case.execute(user_id=USER_ID, team_id=TEAM_ID, job_id=JOB_ID)
+        self.assertEqual(caught.exception.code, RESULTS_NOT_AVAILABLE)
+
     def test_broken_projections_are_discarded(self) -> None:
         """A player placed 400m away would wreck a heatmap."""
 

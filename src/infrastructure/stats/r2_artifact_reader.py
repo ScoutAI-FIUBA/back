@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import logging
 
-from src.application.stats.ports import ArtifactReaderPort, ArtifactReadError
+from botocore.exceptions import ClientError
+
+from src.application.stats.ports import ArtifactReaderPort, ArtifactReadError, ArtifactStorageError
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +20,9 @@ logger = logging.getLogger(__name__)
 # threaten the process.
 MAX_JSON_BYTES = 8_000_000
 MAX_JSONL_BYTES = 32_000_000
+
+# The only answers that mean "this file does not exist"; anything else is a failure to read.
+_MISSING_CODES = frozenset({"NoSuchKey", "404", "NotFound"})
 
 
 class R2ArtifactReader(ArtifactReaderPort):
@@ -30,11 +35,18 @@ class R2ArtifactReader(ArtifactReaderPort):
             client, settings = self._storage._require_client()
             response = client.get_object(Bucket=settings.bucket_name, Key=key)
             body = response["Body"].read(limit + 1)
-        except Exception:
-            # A missing file is ordinary — not every pipeline run writes every
-            # artifact — so this is None rather than an error.
-            logger.info("Artifact not readable: %s", key, exc_info=True)
-            return None
+        except ClientError as exc:
+            if str(exc.response.get("Error", {}).get("Code")) in _MISSING_CODES:
+                # A missing file is ordinary: not every pipeline run writes every artifact.
+                logger.info("Artifact not found: %s", key)
+                return None
+            logger.warning("Artifact could not be read: %s", key, exc_info=True)
+            raise ArtifactStorageError(f"{filename} could not be read from storage.") from exc
+        except Exception as exc:
+            # Timeouts, throttling, credentials, connection errors: not the same as "missing". Answering
+            # None here would let callers treat a transient failure as an empty analysis.
+            logger.warning("Artifact could not be read: %s", key, exc_info=True)
+            raise ArtifactStorageError(f"{filename} could not be read from storage.") from exc
         if len(body) > limit:
             raise ArtifactReadError(f"{filename} is larger than this service will read.")
         return body

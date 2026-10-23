@@ -78,11 +78,13 @@ from src.application.jobs.use_cases import (
     SubmitProcessingJobUseCase,
 )
 from src.application.stats.player_analysis import (
+    CatchUpPlayerAnalysisUseCase,
     GetPlayerAnalysisStatsUseCase,
     GetPlayerShotChartUseCase,
-    ResyncTeamAnalysesUseCase,
+    PUBLIC_STATUS,
     SyncPlayerAnalysisUseCase,
     safe_sync,
+    strict_game_stats_reader,
 )
 from src.application.stats.use_cases import (
     GetCourtPositionsUseCase,
@@ -125,6 +127,7 @@ from src.infrastructure.jobs.http_processing_service import (
     HttpProcessingService,
     UnconfiguredProcessingService,
 )
+from src.infrastructure.stats.postgres_catch_up_lock import PostgresCatchUpLock
 from src.infrastructure.stats.postgres_player_analysis_repository import PostgresPlayerAnalysisRepository
 from src.infrastructure.stats.r2_artifact_reader import R2ArtifactReader, UnavailableArtifactReader
 from src.infrastructure.jobs.r2_artifact_urls import R2ArtifactUrls, UnavailableArtifactUrls
@@ -301,7 +304,7 @@ class HttpDependencies:
     get_player_shot_chart_use_case: GetPlayerShotChartUseCase
     get_player_analysis_stats_use_case: GetPlayerAnalysisStatsUseCase
     sync_player_analysis_use_case: SyncPlayerAnalysisUseCase
-    resync_team_analyses_use_case: ResyncTeamAnalysesUseCase
+    catch_up_player_analysis_use_case: CatchUpPlayerAnalysisUseCase
     processing_callback_token: str
     export_clip_item_use_case: ExportClipItemUseCase
     access_token_resolver: JWTAccessTokenResolver
@@ -442,14 +445,20 @@ def build_http_dependencies(
         jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access, roster=players_repo
     )
     sync_player_analysis_use_case = SyncPlayerAnalysisUseCase(
-        jobs=jobs_repo, game_stats=game_stats_use_case.execute, analysis=player_analysis_repo
+        jobs=jobs_repo,
+        game_stats=strict_game_stats_reader(
+            jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access, roster=players_repo
+        ),
+        analysis=player_analysis_repo,
     )
 
-    resync_team_analyses_use_case = ResyncTeamAnalysesUseCase(jobs=jobs_repo, sync=sync_player_analysis_use_case)
+    catch_up_player_analysis_use_case = CatchUpPlayerAnalysisUseCase(
+        jobs=jobs_repo, sync=sync_player_analysis_use_case, lock=PostgresCatchUpLock(database_url)
+    )
 
     def _sync_player_analysis(job) -> str | None:
         result = safe_sync(sync_player_analysis_use_case, job.id)
-        return None if result is None else result.status
+        return None if result is None else PUBLIC_STATUS.get(result.status, result.status)
 
     def _refresh_player_stats_of_video(video_id: str) -> None:
         player_analysis_repo.refresh_players_for_video(video_id)
@@ -690,7 +699,7 @@ def build_http_dependencies(
             players=players_repo, analysis=player_analysis_repo
         ),
         sync_player_analysis_use_case=sync_player_analysis_use_case,
-        resync_team_analyses_use_case=resync_team_analyses_use_case,
+        catch_up_player_analysis_use_case=catch_up_player_analysis_use_case,
         court_positions_use_case=GetCourtPositionsUseCase(
             jobs=jobs_repo, artifacts=artifact_reader, team_access=team_access
         ),

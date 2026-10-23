@@ -3,11 +3,13 @@ from types import SimpleNamespace as NS
 import pytest
 
 from src.application.players.errors import PlayerError
+from contextlib import contextmanager
+
 from src.application.stats.player_analysis import (
+    CatchUpPlayerAnalysisUseCase,
     GetPlayerAnalysisStatsUseCase,
     GetPlayerShotChartUseCase,
     ReplaceResult,
-    ResyncTeamAnalysesUseCase,
     SyncPlayerAnalysisUseCase,
     SyncResult,
     safe_sync,
@@ -39,9 +41,21 @@ class Jobs:
 class Analysis:
     def __init__(self, status="ok"):
         self.calls = []
+        self.superseded = []
+        self.clock_reads = []
+        self.started = []
         self.status = status
 
-    def replace_video(self, *, video_id, job_id, expected_side, games, shots):
+    def database_now(self):
+        self.clock_reads.append(len(self.calls))  # how many replaces had happened when the clock was read
+        return "db-clock"
+
+    def mark_superseded(self, *, video_id, job_id, started=None):
+        self.superseded.append((job_id, started))
+        return True
+
+    def replace_video(self, *, video_id, job_id, expected_side, games, shots, started=None):
+        self.started.append(started)
         self.calls.append((video_id, games, shots, job_id, expected_side))
         return ReplaceResult(self.status)
 
@@ -174,6 +188,7 @@ def test_an_older_job_is_ignored_when_a_newer_one_is_done():
     jobs = Jobs(older, others=[newer])
     result = SyncPlayerAnalysisUseCase(jobs=jobs, game_stats=lambda **_: STATS, analysis=analysis).execute("old")
     assert result.status == "not_latest" and analysis.calls == []
+    assert analysis.superseded == [("old", "db-clock")]  # nothing left to do for it: marked, so the catch-up skips it
 
 
 @pytest.mark.parametrize("status", ["not_latest", "side_changed"])
@@ -193,30 +208,126 @@ def test_safe_sync_returns_the_result_and_swallows_every_error():
 
 
 class _Sync:
-    def __init__(self, fail_on=()):
-        self.ids, self.fail_on = [], fail_on
+    def __init__(self, fail_on=(), statuses=None):
+        self.ids, self.fail_on, self.statuses = [], fail_on, statuses or {}
 
     def execute(self, job_id):
         self.ids.append(job_id)
         if job_id in self.fail_on:
             raise RuntimeError("boom")
-        return SyncResult("ok")
+        return SyncResult(self.statuses.get(job_id, "ok"))
 
 
-def test_a_team_resync_walks_its_latest_analyses_and_survives_failures():
-    jobs, sync = Jobs(_job()), _Sync(fail_on=("a",))
-    done = ResyncTeamAnalysesUseCase(jobs=jobs, sync=sync, limit=20).execute("team-1")
-    assert jobs.listed == [("team-1", 20)] and sync.ids == ["a", "b"] and done == 1
+class _PendingJobs:
+    def __init__(self, pending=("a", "b")):
+        self.pending, self.calls, self.cleared = list(pending), [], []
+
+    def list_player_stats_pending(self, *, user_id, team_id, version, limit):
+        self.calls.append((user_id, team_id, version, limit))
+        return [NS(id=job_id) for job_id in self.pending][:limit]
+
+    def clear_player_stats_synced(self, *, team_id):
+        self.cleared.append(team_id)
 
 
-def test_a_team_resync_never_raises():
-    class Broken(Jobs):
-        def list_done_with_side_by_team(self, **_):
+class _Lock:
+    def __init__(self, free=True):
+        self.free, self.taken = free, 0
+
+    @contextmanager
+    def try_acquire(self):
+        self.taken += 1
+        yield self.free
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def test_a_catch_up_syncs_each_pending_analysis_and_survives_failures():
+    jobs, sync = _PendingJobs(), _Sync(fail_on=("a",))
+    done = CatchUpPlayerAnalysisUseCase(jobs=jobs, sync=sync).execute(team_id="team-1", limit=50)
+    assert jobs.calls == [(None, "team-1", 2, 50)] and sync.ids == ["a", "b"] and done == 1
+
+
+def test_not_latest_and_no_side_count_as_done_but_side_changed_does_not():
+    sync = _Sync(statuses={"a": "not_latest", "b": "no_side", "c": "side_changed"})
+    done = CatchUpPlayerAnalysisUseCase(jobs=_PendingJobs(("a", "b", "c")), sync=sync).execute()
+    assert done == 2 and sync.ids == ["a", "b", "c"]
+
+
+def test_a_failed_analysis_is_not_retried_inside_the_memo_window_but_after_it():
+    clock, sync = _Clock(), _Sync(fail_on=("a",))
+    catch_up = CatchUpPlayerAnalysisUseCase(jobs=_PendingJobs(("a", "b")), sync=sync, clock=clock)
+    catch_up.execute()
+    catch_up.execute()
+    assert sync.ids == ["a", "b", "b"]
+    clock.now += 601
+    catch_up.execute()
+    assert sync.ids == ["a", "b", "b", "a", "b"]
+
+
+def test_a_catch_up_skips_when_another_run_holds_the_lock():
+    sync, lock = _Sync(), _Lock(free=False)
+    jobs = _PendingJobs()
+    assert CatchUpPlayerAnalysisUseCase(jobs=jobs, sync=sync, lock=lock).execute() == 0
+    assert lock.taken == 1 and jobs.calls == [] and sync.ids == []
+
+
+def test_a_job_already_in_flight_is_not_synced_twice():
+    catch_up = CatchUpPlayerAnalysisUseCase(jobs=_PendingJobs(("a",)), sync=_Sync())
+    assert catch_up._begin("a") is True
+    assert catch_up._begin("a") is False
+    catch_up._end("a")
+    assert catch_up._begin("a") is True
+
+
+def test_a_catch_up_never_raises():
+    class Broken(_PendingJobs):
+        def list_player_stats_pending(self, **_):
             raise RuntimeError("db down")
 
-    assert ResyncTeamAnalysesUseCase(jobs=Broken(_job()), sync=_Sync()).execute("team-1") == 0
-    assert ResyncTeamAnalysesUseCase(jobs=Jobs(_job()), sync=_Sync()).execute(None) == 0
-    assert ResyncTeamAnalysesUseCase(jobs=Jobs(_job()), sync=None).execute("team-1") == 0
+    class BrokenLock:
+        def try_acquire(self):
+            raise RuntimeError("no connection")
+
+    assert CatchUpPlayerAnalysisUseCase(jobs=Broken(), sync=_Sync()).execute() == 0
+    assert CatchUpPlayerAnalysisUseCase(jobs=_PendingJobs(), sync=_Sync(), lock=BrokenLock()).execute() == 0
+    assert CatchUpPlayerAnalysisUseCase(jobs=_PendingJobs(), sync=None).execute() == 0
+    assert CatchUpPlayerAnalysisUseCase(jobs=Broken(), sync=_Sync()).pending("u1") is False
+
+
+def test_pending_asks_once_per_window_per_user_and_ignores_memoised_failures():
+    clock, jobs = _Clock(), _PendingJobs(("a",))
+    catch_up = CatchUpPlayerAnalysisUseCase(jobs=jobs, sync=_Sync(fail_on=("a",)), clock=clock)
+    assert catch_up.pending("u1") is True
+    assert catch_up.pending("u1") is False  # inside the window: already scheduled
+    assert catch_up.pending("u2") is True   # another user has their own window
+    assert len(jobs.calls) == 2
+    catch_up.execute()                       # "a" fails and is memoised
+    clock.now += 61
+    assert catch_up.pending("u1") is False   # only a memoised failure is left
+    assert jobs.calls[-1][3] == 2           # asked for one more row than the memoised failures
+    clock.now += 600
+    assert catch_up.pending("u1") is True
+
+
+def test_invalidating_a_team_clears_its_markers_and_never_raises():
+    jobs = _PendingJobs()
+    catch_up = CatchUpPlayerAnalysisUseCase(jobs=jobs, sync=_Sync())
+    catch_up.invalidate_team("team-1")
+    catch_up.invalidate_team(None)
+    assert jobs.cleared == ["team-1"]
+
+    class Broken(_PendingJobs):
+        def clear_player_stats_synced(self, **_):
+            raise RuntimeError("db down")
+
+    CatchUpPlayerAnalysisUseCase(jobs=Broken(), sync=_Sync()).invalidate_team("team-1")
 
 
 class Players:
@@ -277,3 +388,47 @@ def test_other_users_players_are_not_found():
         GetPlayerShotChartUseCase(players=Players(), analysis=Reader()).execute(user_id="u2", player_id="p")
     with pytest.raises(PlayerError):
         GetPlayerAnalysisStatsUseCase(players=Players(), analysis=Reader()).execute(user_id="u2", player_id="p")
+
+
+def test_the_database_clock_is_read_before_the_slow_part_and_handed_to_the_replace():
+    order = []
+    analysis = Analysis()
+    original = analysis.database_now
+    analysis.database_now = lambda: (order.append("clock"), original())[1]
+
+    def reader(**_):
+        order.append("read")
+        return STATS
+
+    SyncPlayerAnalysisUseCase(jobs=Jobs(_job()), game_stats=reader, analysis=analysis).execute("j1")
+    assert order == ["clock", "read"] and analysis.started == ["db-clock"]
+
+
+def test_a_failing_job_is_logged_loudly_once_and_quietly_after(caplog):
+    import logging
+
+    clock = _Clock()
+    catch_up = CatchUpPlayerAnalysisUseCase(jobs=_PendingJobs(("a",)), sync=_Sync(fail_on=("a",)), clock=clock)
+    with caplog.at_level(logging.DEBUG, logger="src.application.stats.player_analysis"):
+        catch_up.execute()
+        clock.now += 601
+        catch_up.execute()
+        clock.now += 601
+        catch_up.execute()
+    sync_logs = [r for r in caplog.records if "Could not sync" in r.getMessage()]
+    assert [r.levelno for r in sync_logs] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+
+
+def test_a_stale_replace_is_neither_done_nor_a_failure_and_is_retried_at_once():
+    clock = _Clock()
+    sync = _Sync(statuses={"a": "stale"})
+    catch_up = CatchUpPlayerAnalysisUseCase(jobs=_PendingJobs(("a",)), sync=sync, clock=clock)
+    assert catch_up.execute() == 0 and catch_up.execute() == 0
+    assert sync.ids == ["a", "a"]  # no failure memo: the next run redoes it
+
+
+def test_a_stale_result_is_reported_publicly_as_side_changed():
+    from src.application.stats.player_analysis import PUBLIC_STATUS
+
+    assert PUBLIC_STATUS["stale"] == "side_changed"
+    assert _sync(STATS, analysis=Analysis("stale"))[0].status == "stale"

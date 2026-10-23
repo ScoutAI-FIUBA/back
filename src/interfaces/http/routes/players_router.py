@@ -17,9 +17,9 @@ from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 from src.application.players.errors import PlayerError, player_error_http_status
 from src.application.stats.player_analysis import (
+    CatchUpPlayerAnalysisUseCase,
     GetPlayerAnalysisStatsUseCase,
     GetPlayerShotChartUseCase,
-    ResyncTeamAnalysesUseCase,
 )
 from src.application.matches.errors import MatchError, match_error_http_status
 from src.application.matches.use_cases import GetPlayerMatchesUseCase
@@ -79,6 +79,7 @@ def _to_player_response(player) -> dict[str, object]:
         "primary_position": player.primary_position,
         "jersey_number": player.jersey_number,
         "team_id": player.team_id,
+        "stats": player.stats,
     }
 
 
@@ -106,7 +107,7 @@ def create_players_router(
     get_player_matches_use_case: GetPlayerMatchesUseCase,
     get_player_shot_chart_use_case: GetPlayerShotChartUseCase | None = None,
     get_player_analysis_stats_use_case: GetPlayerAnalysisStatsUseCase | None = None,
-    resync_team: ResyncTeamAnalysesUseCase | None = None,
+    catch_up: CatchUpPlayerAnalysisUseCase | None = None,
 ) -> APIRouter:
     """Creates players HTTP endpoints and maps domain failures to HTTP responses.
 
@@ -117,23 +118,24 @@ def create_players_router(
     router = APIRouter(prefix="/players", tags=["players"])
 
     def _team_of(user_id: str, player_id: str) -> str | None:
-        """The player's team before a change, read only when a re-sync will need it."""
+        """The player's team before a change, read only when a catch-up will need it."""
 
-        if resync_team is None:
+        if catch_up is None:
             return None
         try:
             return get_player_stats_use_case.execute(user_id=user_id, player_id=player_id).team_id
-        except Exception:  # noqa: BLE001 - the re-sync is best effort and must not affect the request
+        except Exception:  # noqa: BLE001 - the catch-up is best effort and must not affect the request
             return None
 
-    def _resync(background_tasks: BackgroundTasks, *team_ids: str | None) -> None:
-        """Re-sync these teams' latest analyses after the response is sent (who a track links to
-        depends on the roster)."""
+    def _catch_up_team(background_tasks: BackgroundTasks, *team_ids: str | None) -> None:
+        """Forget these teams' kept player numbers and rebuild them after the response is sent (who a
+        track links to depends on the roster)."""
 
-        if resync_team is None:
+        if catch_up is None:
             return
         for team_id in dict.fromkeys(team_id for team_id in team_ids if team_id):
-            background_tasks.add_task(resync_team.execute, team_id)
+            catch_up.invalidate_team(team_id)
+            background_tasks.add_task(catch_up.execute, team_id=team_id)
 
     @router.post("", status_code=HTTPStatus.CREATED, response_model=None)
     def create_player(payload: PlayerPayload, request: Request, background_tasks: BackgroundTasks):
@@ -152,20 +154,26 @@ def create_players_router(
                     jersey_number=payload.jersey_number,
                 )
             )
-            _resync(background_tasks, player.team_id)
+            _catch_up_team(background_tasks, player.team_id)
             return {"player": _to_player_response(player)}
         except PlayerError as exc:
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
 
     @router.get("", response_model=None)
-    def list_players(request: Request, team_id: UUID | None = None):
-        """Lists the scout's players, optionally filtered to one of their teams."""
+    def list_players(request: Request, background_tasks: BackgroundTasks, team_id: UUID | None = None):
+        """Lists the scout's players, optionally filtered to one of their teams.
+
+        Each player carries `stats` as last kept from the video analyses. When some analysis
+        is still pending, they are caught up after the response is sent.
+        """
 
         user_id = str(request.state.user_id)
         if team_id is None:
             players = list_players_use_case.execute(user_id=user_id)
         else:
             players = list_players_by_team_use_case.execute(user_id=user_id, team_id=str(team_id))
+        if catch_up is not None and catch_up.pending(user_id):
+            background_tasks.add_task(catch_up.execute, user_id=user_id)
         return {"players": [_to_player_response(player) for player in players]}
 
     @router.put("/{player_id}", response_model=None)
@@ -186,7 +194,7 @@ def create_players_router(
                     jersey_number=payload.jersey_number,
                 )
             )
-            _resync(background_tasks, player.team_id)
+            _catch_up_team(background_tasks, player.team_id)
             return {"player": _to_player_response(player)}
         except PlayerError as exc:
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
@@ -253,7 +261,7 @@ def create_players_router(
             delete_player_use_case.execute(
                 DeletePlayerCommand(user_id=str(request.state.user_id), id=str(player_id))
             )
-            _resync(background_tasks, team_before)
+            _catch_up_team(background_tasks, team_before)
             return Response(status_code=HTTPStatus.NO_CONTENT)
         except PlayerError as exc:
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
@@ -271,7 +279,7 @@ def create_players_router(
                     team_id=str(team_id),
                 )
             )
-            _resync(background_tasks, previous_team, player.team_id)
+            _catch_up_team(background_tasks, previous_team, player.team_id)
             return {"player": _to_player_response(player)}
         except PlayerError as exc:
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())

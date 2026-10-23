@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from psycopg.rows import dict_row
@@ -9,6 +10,7 @@ from src.application.stats.player_analysis import (
     NOT_LATEST,
     OK,
     SIDE_CHANGED,
+    STALE,
     PlayerAnalysisRepositoryPort,
     ReplaceResult,
 )
@@ -53,6 +55,17 @@ _INSERT_SHOT = """
         %(ts)s, %(attribution)s, %(review)s,
         %(source)s, %(confidence)s, %(release)s, %(resolved)s, %(candidates)s::jsonb, %(calc)s
     )
+"""
+
+
+# The job's team side and whether it is the latest DONE job of its video (decided under the video lock).
+_JOB_STATE_SQL = """
+    SELECT j.our_team_side, j.player_stats_synced_at,
+           j.id = (SELECT d.id FROM processing_jobs d
+                    WHERE d.video_id = j.video_id AND d.status = 'DONE'
+                    ORDER BY d.created_at DESC, d.id DESC LIMIT 1) AS is_latest
+      FROM processing_jobs j
+     WHERE j.id = %(j)s::uuid AND j.video_id = %(v)s::uuid
 """
 
 
@@ -109,6 +122,7 @@ class PostgresPlayerAnalysisRepository(PlayerAnalysisRepositoryPort):
         expected_side: int | None,
         games: list[PlayerGameRow],
         shots: list[PlayerShotRow],
+        started: datetime | None = None,
     ) -> ReplaceResult:
         with self._connection.transaction():
             with self._connection.cursor(row_factory=dict_row) as cur:
@@ -116,22 +130,22 @@ class PostgresPlayerAnalysisRepository(PlayerAnalysisRepositoryPort):
                 # so a slow sync of an older job cannot overwrite a newer one, and two syncs of
                 # the same video cannot interleave their delete and insert.
                 cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%(v)s::text, 0))", {"v": video_id})
-                cur.execute(
-                    """
-                    SELECT j.our_team_side,
-                           j.id = (SELECT d.id FROM processing_jobs d
-                                    WHERE d.video_id = j.video_id AND d.status = 'DONE'
-                                    ORDER BY d.created_at DESC, d.id DESC LIMIT 1) AS is_latest
-                      FROM processing_jobs j
-                     WHERE j.id = %(j)s::uuid AND j.video_id = %(v)s::uuid
-                    """,
-                    {"j": job_id, "v": video_id},
-                )
+                cur.execute(_JOB_STATE_SQL, {"j": job_id, "v": video_id})
                 job = cur.fetchone()
-                if job is None or not job["is_latest"]:
+                if job is None:
+                    return ReplaceResult(NOT_LATEST)
+                if not job["is_latest"]:
+                    # An older analysis of the video: the newer one decides, nothing is left to do.
+                    self._mark_synced(cur, job_id, started)
                     return ReplaceResult(NOT_LATEST)
                 if job["our_team_side"] != expected_side:
                     return ReplaceResult(SIDE_CHANGED)
+                # The marker moved after this sync began: a roster change cleared it, or a newer sync
+                # already finished. What was read may be older than what is kept, so keep what is there
+                # (a pending analysis is redone). Setting the side to null always clears the rows.
+                if (started is not None and expected_side is not None
+                        and job["player_stats_synced_at"] is not None and job["player_stats_synced_at"] >= started):
+                    return ReplaceResult(STALE)
 
                 cur.execute(
                     "SELECT DISTINCT player_id FROM player_analysis_games WHERE video_id = %(v)s::uuid",
@@ -154,7 +168,41 @@ class PostgresPlayerAnalysisRepository(PlayerAnalysisRepositoryPort):
                     cur.executemany(_INSERT_SHOT, [_shot_params(shot) for shot in shots])
                 for player_id in sorted(affected):
                     self._refresh_player_stats(cur, player_id)
+                # Same transaction as the rows: the marker never says "done" for rows that were rolled back.
+                self._mark_synced(cur, job_id, started)
         return ReplaceResult(OK, sorted(affected))
+
+    def database_now(self) -> datetime:
+        with self._connection.cursor() as cur:
+            cur.execute("SELECT now()")
+            return cur.fetchone()[0]
+
+    def mark_superseded(self, *, video_id: str, job_id: str, started: datetime | None = None) -> bool:
+        with self._connection.transaction():
+            with self._connection.cursor(row_factory=dict_row) as cur:
+                cur.execute("SELECT pg_advisory_xact_lock(hashtextextended(%(v)s::text, 0))", {"v": video_id})
+                cur.execute(_JOB_STATE_SQL, {"j": job_id, "v": video_id})
+                job = cur.fetchone()
+                if job is None or job["is_latest"]:
+                    return False
+                self._mark_synced(cur, job_id, started)
+        return True
+
+    @staticmethod
+    def _mark_synced(cur: Any, job_id: str, started: datetime | None) -> None:
+        """Mark the analysis done, unless its marker changed after `started` (a roster change cleared it
+        while this sync was reading: what was kept may be stale, so it stays pending)."""
+
+        cur.execute(
+            """
+            UPDATE processing_jobs
+               SET player_stats_synced_version = %(calc)s, player_stats_synced_at = NOW()
+             WHERE id = %(j)s::uuid
+               AND (%(started)s::timestamptz IS NULL
+                    OR player_stats_synced_at IS NULL OR player_stats_synced_at < %(started)s::timestamptz)
+            """,
+            {"calc": CALC_VERSION, "j": job_id, "started": started},
+        )
 
     def refresh_players_for_video(self, video_id: str) -> list[str]:
         with self._connection.transaction():

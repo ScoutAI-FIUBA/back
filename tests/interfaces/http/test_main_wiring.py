@@ -28,6 +28,23 @@ class _FakeConnection:
 
 
 class TestMainWiring(unittest.TestCase):
+    def test_the_lifespan_starts_the_player_stats_catch_up(self) -> None:
+        env = {
+            "AUTH_JWT_SECRET": "secret",
+            "AUTH_REFRESH_SECRET": "refresh",
+            "AUTH_JWT_ISSUER": "scoutai",
+            "AUTH_JWT_AUDIENCE": "scoutai-client",
+            "DATABASE_URL": "postgresql://test",
+        }
+        started: list[object] = []
+        with patch.dict(os.environ, env, clear=False):
+            app = create_app()
+        self.assertEqual(started, [])  # building the app starts nothing
+        with patch("src.interfaces.http.main.start_player_stats_catch_up", side_effect=started.append):
+            with TestClient(app):  # entering the client runs the real lifespan
+                self.assertEqual(len(started), 1)
+        self.assertTrue(hasattr(started[0], "execute"))
+
     def test_create_app_registers_health_auth_players_teams_and_matches_routes(self) -> None:
         env = {
             "AUTH_JWT_SECRET": "secret",

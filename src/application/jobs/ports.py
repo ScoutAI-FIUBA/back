@@ -81,6 +81,23 @@ class JobRepositoryPort(ABC):
         """The team's most recent DONE jobs that have a team side set, newest first."""
 
     @abstractmethod
+    def list_player_stats_pending(
+        self, *, user_id: str | None, team_id: str | None, version: int, limit: int
+    ) -> list[ProcessingJob]:
+        """DONE jobs with a team side whose player stats were not kept with `version` yet, newest first.
+
+        Optionally limited to one requesting user and/or one team.
+        """
+
+    @abstractmethod
+    def clear_player_stats_synced(self, *, team_id: str) -> None:
+        """Forget that the team's analyses had their player stats kept (the roster changed).
+
+        The version goes back to NULL and `player_stats_synced_at` becomes "last changed" (the database
+        clock now), so a sync that started before this cannot mark its stale result as done.
+        """
+
+    @abstractmethod
     def list_by_video(self, *, video_id: str, team_id: str) -> list[ProcessingJob]: ...
 
     @abstractmethod

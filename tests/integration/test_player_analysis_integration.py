@@ -14,9 +14,9 @@ from psycopg.rows import dict_row
 
 from src.application.jobs.use_cases import RecordJobProgressCommand, RecordJobProgressUseCase, SetJobTeamSideUseCase
 from src.application.stats.player_analysis import (
+    CatchUpPlayerAnalysisUseCase,
     GetPlayerAnalysisStatsUseCase,
     GetPlayerShotChartUseCase,
-    ResyncTeamAnalysesUseCase,
     SyncPlayerAnalysisUseCase,
     safe_sync,
 )
@@ -963,7 +963,7 @@ def test_the_team_listing_for_a_resync_is_bounded_newest_first_and_needs_a_side(
     assert jobs.list_done_with_side_by_team(team_id=str(uuid4()), limit=20) == []
 
 
-def test_changing_a_jersey_and_resyncing_moves_the_rows_to_the_new_link() -> None:
+def test_changing_a_jersey_and_catching_up_moves_the_rows_to_the_new_link() -> None:
     world = World()  # brown wears 7, white wears 9
     connection = OperationConnection(_dsn())
 
@@ -984,8 +984,10 @@ def test_changing_a_jersey_and_resyncing_moves_the_rows_to_the_new_link() -> Non
             cur.execute("UPDATE players SET jersey_number = '7' WHERE id = %s", (world.white,))
         conn.commit()
 
-    resync = ResyncTeamAnalysesUseCase(jobs=PostgresJobRepository(connection=connection), sync=sync)
-    assert resync.execute(world.team) == 1
+    # A roster change forgets the team's markers; the catch-up then rebuilds the analysis.
+    catch_up = CatchUpPlayerAnalysisUseCase(jobs=PostgresJobRepository(connection=connection), sync=sync)
+    catch_up.invalidate_team(world.team)
+    assert catch_up.execute(team_id=world.team) == 1
 
     assert _stats_of(world.brown)["games_played"] == 0
     assert _stats_of(world.white)["games_played"] == 1
@@ -1052,3 +1054,662 @@ def test_the_response_models_accept_the_real_brown_clips() -> None:
     assert parsed_totals.games == 2 and parsed_totals.calc_version == 2
     json.dumps(parsed_chart.model_dump(mode="json"), allow_nan=False)
     json.dumps(parsed_totals.model_dump(mode="json"), allow_nan=False)
+
+
+# ---------------------------------------------------------------------------------------------
+# Catch-up: the marker, the backfill, failures, races, and what the players listing serves.
+# ---------------------------------------------------------------------------------------------
+
+CALC = 2  # CALC_VERSION at the time of writing; the tests read it from the code where it matters
+
+
+class _Reader:
+    """A game stats reader that counts its calls, can fail, and can stop mid-read."""
+
+    def __init__(self, document=None, *, fail: bool = False, gate: threading.Event | None = None,
+                 entered: threading.Event | None = None) -> None:
+        self.document, self.fail, self.gate, self.entered = document, fail, gate, entered
+        self.calls: list[str] = []
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs["job_id"])
+        if self.entered is not None:
+            self.entered.set()
+        if self.gate is not None:
+            assert self.gate.wait(30)
+        if self.fail:
+            raise RuntimeError("result files are missing")
+        document = self.document
+        return document(kwargs["job_id"]) if callable(document) else document
+
+
+def _catch_up(reader, *, hook=None, lock: bool = True, **kwargs) -> CatchUpPlayerAnalysisUseCase:
+    from src.infrastructure.stats.postgres_catch_up_lock import PostgresCatchUpLock
+
+    return CatchUpPlayerAnalysisUseCase(
+        jobs=PostgresJobRepository(connection=OperationConnection(_dsn())),
+        sync=_sync_for(reader, hook),
+        lock=PostgresCatchUpLock(_dsn()) if lock else None,
+        **kwargs,
+    )
+
+
+def _marker(job_id: str) -> tuple:
+    with psycopg.connect(_dsn()) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT player_stats_synced_version, player_stats_synced_at FROM processing_jobs WHERE id = %s",
+                        (job_id,))
+            return cur.fetchone()
+
+
+def test_007_adds_the_marker_columns_and_applying_it_twice_changes_no_data() -> None:
+    world = World()
+    assert _sync_for(lambda **_: _doc(world.brown, shots=2, made=1)).execute(world.job).status == "ok"
+    tables = ("players", "processing_jobs", "player_analysis_games", "player_analysis_shots", "videos", "teams")
+    before = {table: _count(f"SELECT COUNT(*) FROM {table}") for table in tables}
+    marker_before = _marker(world.job)
+    sql = (ROOT / "src/infrastructure/jobs/migrations/007_processing_jobs_player_stats_sync.sql").read_text("utf-8")
+    with psycopg.connect(_dsn()) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            cur.execute(sql)
+        conn.commit()
+    assert {table: _count(f"SELECT COUNT(*) FROM {table}") for table in tables} == before
+    assert _marker(world.job) == marker_before  # re-running never resets a marker
+    assert _count("SELECT COUNT(*) FROM schema_migrations WHERE filename = %s",
+                  "src/infrastructure/jobs/migrations/007_processing_jobs_player_stats_sync.sql") == 1
+    statements = [line for line in sql.splitlines() if line and not line.startswith("--")]
+    assert len(statements) == 2 and all(line.startswith("ALTER TABLE processing_jobs ADD COLUMN IF NOT EXISTS")
+                                        for line in statements)
+
+
+def test_a_sync_marks_the_analysis_in_the_same_transaction_as_its_rows() -> None:
+    world = World()
+    assert _marker(world.job) == (None, None)
+    assert _replace(_repo(), world, games=[_game(world, world.brown)], shots=[]).status == "ok"
+    version, at = _marker(world.job)
+    assert version == CALC and at is not None
+
+
+def test_a_replace_that_fails_midway_leaves_no_marker() -> None:
+    world = World()
+
+    def boom(_player: str) -> None:
+        raise RuntimeError("crash after the delete")
+
+    repo = _HookRepo(OperationConnection(_dsn()), boom)
+    with pytest.raises(RuntimeError):
+        _replace(repo, world, games=[_game(world, world.brown)], shots=[])
+    assert _marker(world.job) == (None, None)
+    assert _count("SELECT COUNT(*) FROM player_analysis_games") == 0
+
+
+def test_the_marker_is_set_for_an_older_analysis_but_not_when_the_side_changed() -> None:
+    world = World()
+    newer = world.add_job_for(world.video, minutes=5)
+    repo = _repo()
+    assert _replace(repo, world, games=[], shots=[]).status == "not_latest"  # world.job is older now
+    assert _marker(world.job)[0] == CALC
+    assert _marker(newer) == (None, None)
+    assert _replace(repo, world, job=newer, games=[], shots=[], side=0).status == "side_changed"
+    assert _marker(newer) == (None, None)  # a newer sync handles it
+    assert _replace(repo, world, job=str(uuid4()), games=[], shots=[]).status == "not_latest"  # no such job: no marker
+    assert repo.mark_superseded(video_id=world.video, job_id=newer) is False  # the latest one is never "superseded"
+
+
+def test_the_pending_listing_filters_and_the_clear_resets_only_the_team() -> None:
+    world = World()
+    other = World()
+    _, no_side = world.add_extra_video("no side", side=None)
+    _, running = world.add_extra_video("running", status="RUNNING")
+    jobs = PostgresJobRepository(connection=OperationConnection(_dsn()))
+    pending = lambda **kw: {job.id for job in jobs.list_player_stats_pending(version=CALC, limit=50, **{
+        "user_id": None, "team_id": None, **kw})}
+    assert pending() == {world.job, other.job}
+    assert pending(user_id=world.user) == {world.job}
+    assert pending(team_id=other.team) == {other.job}
+    assert jobs.list_player_stats_pending(user_id=None, team_id=None, version=CALC, limit=1)[0].id in {world.job, other.job}
+    assert no_side not in pending() and running not in pending()
+    _sync_for(lambda **_: _doc(world.brown, shots=1, made=1)).execute(world.job)
+    assert pending() == {other.job}
+    assert {job.id for job in jobs.list_player_stats_pending(user_id=None, team_id=None, version=CALC + 1,
+                                                              limit=50)} == {world.job, other.job}
+    jobs.clear_player_stats_synced(team_id=other.team)  # another team: nothing to clear
+    assert _marker(world.job)[0] == CALC
+    jobs.clear_player_stats_synced(team_id=world.team)
+    assert _marker(world.job)[0] is None and pending() == {world.job, other.job}
+
+
+def test_the_backfill_fills_rows_stats_and_marker_and_a_second_run_reads_nothing() -> None:
+    world = World()
+    video_b, job_b = world.add_extra_video("second")
+    reader = _Reader(lambda job_id: _doc(world.brown, shots=2, made=1))
+    catch_up = _catch_up(reader)
+    assert _count("SELECT COUNT(*) FROM player_analysis_games") == 0
+    assert catch_up.execute() == 2
+    assert sorted(reader.calls) == sorted([world.job, job_b])
+    assert _count("SELECT COUNT(*) FROM player_analysis_games WHERE player_id = %s", world.brown) == 2
+    stats = _stats_of(world.brown)
+    assert stats["games_played"] == 2 and stats["field_goals"]["attempted_total"] == 4
+    assert _marker(world.job)[0] == CALC and _marker(job_b)[0] == CALC
+    reader.calls.clear()
+    assert _catch_up(reader).execute() == 0
+    assert reader.calls == []  # nothing pending: not a single read of the result files
+
+
+def test_an_analysis_that_links_nobody_is_marked_once_and_never_recomputed() -> None:
+    world = World()
+    reader = _Reader({"players": [{"roster_player_id": None, "jersey_number": "27"}], "shots": []})
+    assert _catch_up(reader).execute() == 1
+    assert _marker(world.job)[0] == CALC and _count("SELECT COUNT(*) FROM player_analysis_games") == 0
+    assert _catch_up(reader).execute() == 0
+    assert len(reader.calls) == 1
+
+
+def test_an_older_analysis_is_marked_without_reading_its_files() -> None:
+    world = World()
+    newer = world.add_job_for(world.video, minutes=5)
+    reader = _Reader(lambda job_id: _doc(world.brown, shots=1, made=1))
+    assert _catch_up(reader).execute() == 2
+    assert reader.calls == [newer]  # the older one never touched object storage
+    assert _marker(world.job)[0] == CALC and _marker(newer)[0] == CALC
+    assert _catch_up(reader).execute() == 0
+
+
+def test_a_failing_reader_leaves_the_marker_empty_and_the_memo_stops_a_retry() -> None:
+    world = World()
+    reader = _Reader(fail=True)
+    clock = [1000.0]
+    catch_up = _catch_up(reader, clock=lambda: clock[0])
+    assert catch_up.execute() == 0
+    assert _marker(world.job) == (None, None) and len(reader.calls) == 1
+    assert catch_up.execute() == 0
+    assert len(reader.calls) == 1  # inside the window: not retried
+    clock[0] += 601
+    catch_up.execute()
+    assert len(reader.calls) == 2  # after it: tried again, and it can now succeed
+    reader.fail, reader.document = False, _doc(world.brown, shots=1, made=1)
+    clock[0] += 601
+    assert catch_up.execute() == 1 and _marker(world.job)[0] == CALC
+
+
+# --- the HTTP side, on the real repositories --------------------------------------------------
+
+
+def _http(world: World, catch_up):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from src.application.players.use_cases import (
+        AssignPlayerTeamUseCase, CreatePlayerUseCase, DeletePlayerUseCase, GetPlayerStatsUseCase,
+        ListPlayersByTeamUseCase, ListPlayersUseCase, UpdatePlayerUseCase,
+    )
+    from src.infrastructure.team.postgres_repository import PostgresTeamRepository
+    from src.interfaces.http.bootstrap.dependencies import UUIDIds
+    from src.interfaces.http.routes.players_router import create_players_router
+
+    connection = OperationConnection(_dsn())
+    players = PostgresPlayerRepository(connection=connection)
+    analysis = PostgresPlayerAnalysisRepository(connection=connection)
+    uow = PsycopgUnitOfWork(connection)
+    app = FastAPI()
+
+    @app.middleware("http")
+    async def _user(request, call_next):
+        request.state.user_id = world.user
+        return await call_next(request)
+
+    class _NoMatches:
+        def execute(self, **_):
+            return []
+
+    app.include_router(create_players_router(
+        create_player_use_case=CreatePlayerUseCase(players=players, ids=UUIDIds(), uow=uow),
+        list_players_use_case=ListPlayersUseCase(players=players),
+        list_players_by_team_use_case=ListPlayersByTeamUseCase(players=players),
+        update_player_use_case=UpdatePlayerUseCase(players=players, uow=uow),
+        delete_player_use_case=DeletePlayerUseCase(players=players, uow=uow),
+        assign_player_team_use_case=AssignPlayerTeamUseCase(
+            players=players, teams=PostgresTeamRepository(connection=connection), uow=uow),
+        get_player_stats_use_case=GetPlayerStatsUseCase(players=players),
+        get_player_matches_use_case=_NoMatches(),
+        get_player_analysis_stats_use_case=GetPlayerAnalysisStatsUseCase(players=players, analysis=analysis),
+        catch_up=catch_up,
+    ))
+    return TestClient(app)
+
+
+def _listed(client, player_id: str) -> dict:
+    return next(player for player in client.get("/players").json()["players"] if player["id"] == player_id)
+
+
+def test_the_player_response_carries_stats_in_the_canonical_shape_and_agrees_with_analysis_stats() -> None:
+    from src.domain.players.entities import build_empty_player_stats
+
+    world = World()
+    video_b, job_b = world.add_extra_video("second")
+    reader = _Reader(lambda job_id: _doc(world.brown, shots=4, made=3 if job_id == world.job else 1))
+    client = _http(world, None)  # no catch-up wired: the listing only serves what is kept
+    assert set(_listed(client, world.brown)["stats"]) == set(build_empty_player_stats())
+    assert _listed(client, world.brown)["stats"]["games_played"] == 0  # nothing kept yet
+
+    _catch_up(reader).execute()
+    stats = _listed(client, world.brown)["stats"]
+    totals = client.get(f"/players/{world.brown}/analysis-stats").json()
+    assert stats["games_played"] == totals["games"] == 2
+    assert stats["points"]["total"] == totals["points"] == 12
+    assert stats["field_goals"]["made_total"] == totals["field_goals"]["made"] == 4
+    assert stats["field_goals"]["attempted_total"] == totals["field_goals"]["attempted"] == 8
+    assert _listed(client, world.white)["stats"]["games_played"] == 0
+    assert client.get(f"/players/{world.brown}/stats").json()["player"]["stats"] == stats
+
+
+def test_listing_players_starts_a_background_catch_up_and_never_fails_because_of_it() -> None:
+    world = World()
+    reader = _Reader(lambda job_id: _doc(world.brown, shots=2, made=2))
+    client = _http(world, _catch_up(reader))
+    first = client.get("/players")  # answers with the old numbers; the catch-up runs after the response
+    assert first.status_code == 200
+    assert _listed(client, world.brown)["stats"]["games_played"] == 1
+    assert _marker(world.job)[0] == CALC
+    # Inside the 60 s window the listing does not even ask again.
+    before = len(reader.calls)
+    assert client.get("/players").status_code == 200 and len(reader.calls) == before
+
+
+def test_listing_players_still_answers_200_with_the_old_stats_when_the_catch_up_fails() -> None:
+    world = World()
+    assert _sync_for(lambda **_: _doc(world.brown, shots=1, made=1)).execute(world.job).status == "ok"
+    extra_video, extra_job = world.add_extra_video("never readable")
+    reader = _Reader(fail=True)
+    client = _http(world, _catch_up(reader))
+    response = client.get("/players")
+    assert response.status_code == 200
+    brown = next(p for p in response.json()["players"] if p["id"] == world.brown)
+    assert brown["stats"]["games_played"] == 1  # the previous numbers are still served
+    assert _marker(extra_job) == (None, None) and reader.calls == [extra_job]
+
+
+def test_a_roster_change_clears_the_markers_and_relinks_a_new_jersey_on_an_old_analysis() -> None:
+    world = World()  # brown wears 7, white wears 9
+    old_job = world.job
+
+    def document(_job_id):
+        with psycopg.connect(_dsn()) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM players WHERE team_id = %s AND jersey_number = '7'", (world.team,))
+                row = cur.fetchone()
+        return _doc(str(row[0]), shots=2, made=1) if row else {"players": [], "shots": []}
+
+    reader = _Reader(document)
+    catch_up = _catch_up(reader)
+    client = _http(world, catch_up)
+    assert catch_up.execute() == 1 and _stats_of(world.brown)["games_played"] == 1
+    # White takes over number 7 through the API, brown becomes 8.
+    payload = {"birth_date": "1996-01-01", "height_cm": 198, "weight_kg": 100, "primary_position": "SF"}
+    assert client.put(f"/players/{world.brown}", json={**payload, "first_name": "Jaylen", "last_name": "Test",
+                                                       "jersey_number": "8"}).status_code == 200
+    assert client.put(f"/players/{world.white}", json={**payload, "first_name": "Derrick", "last_name": "Test",
+                                                       "jersey_number": "7"}).status_code == 200
+    # TestClient runs the background tasks before returning: the old analysis was re-linked.
+    assert _marker(old_job)[0] == CALC
+    assert _stats_of(world.brown)["games_played"] == 0
+    assert _stats_of(world.white)["games_played"] == 1
+    assert len(_repo().list_shots(owner_user_id=world.user, player_id=world.white)) == 2
+
+
+def test_without_a_roster_change_a_marked_analysis_is_never_recomputed() -> None:
+    world = World()
+    reader = _Reader(lambda job_id: _doc(world.brown, shots=1, made=1))
+    catch_up = _catch_up(reader)
+    catch_up.execute()
+    catch_up.execute(team_id=world.team)
+    assert len(reader.calls) == 1
+    catch_up.invalidate_team(world.team)
+    catch_up.execute(team_id=world.team)
+    assert len(reader.calls) == 2
+
+
+# --- concurrency -----------------------------------------------------------------------------
+
+
+def test_two_catch_ups_at_once_one_skips_and_no_rows_are_duplicated() -> None:
+    world = World()
+    entered, gate = threading.Event(), threading.Event()
+    first_reader = _Reader(lambda job_id: _doc(world.brown, shots=2, made=1), gate=gate, entered=entered)
+    second_reader = _Reader(lambda job_id: _doc(world.brown, shots=2, made=1))
+    out: dict = {}
+    first = _in_thread("first", lambda: _catch_up(first_reader).execute(), out)
+    assert entered.wait(15)  # the first run holds the lock and is reading
+    assert _catch_up(second_reader).execute() == 0  # skipped at once, did not wait
+    assert second_reader.calls == []
+    gate.set()
+    _join(first)
+    assert out["first"] == 1
+    assert _count("SELECT COUNT(*) FROM player_analysis_games") == 1
+    assert _count("SELECT COUNT(*) FROM player_analysis_shots") == 2
+    # The lock is released at the end: a later run can take it again (nothing pending, but it runs).
+    third_reader = _Reader(lambda job_id: _doc(world.brown, shots=2, made=1))
+    world.add_extra_video("late")
+    assert _catch_up(third_reader).execute() == 1 and len(third_reader.calls) == 1
+
+
+def test_the_lock_is_released_even_when_the_run_blows_up() -> None:
+    from src.infrastructure.stats.postgres_catch_up_lock import PostgresCatchUpLock
+
+    lock = PostgresCatchUpLock(_dsn())
+    with pytest.raises(RuntimeError):
+        with lock.try_acquire() as acquired:
+            assert acquired
+            with lock.try_acquire() as second:
+                assert second is False
+            raise RuntimeError("boom")
+    with lock.try_acquire() as again:
+        assert again
+
+
+def test_a_side_flipped_during_a_catch_up_read_leaves_the_marker_empty_and_the_next_run_fixes_it() -> None:
+    world = World()
+    entered, gate = threading.Event(), threading.Event()
+    # The document depends on the side the job has when the read happens, like the real box score.
+    def document(_job_id):
+        with psycopg.connect(_dsn()) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT our_team_side FROM processing_jobs WHERE id = %s", (world.job,))
+                side = cur.fetchone()[0]
+        return _doc(world.brown if side == 1 else world.white, shots=2, made=1)
+
+    slow = _Reader(document, gate=gate, entered=entered)
+    out: dict = {}
+    run = _in_thread("catch-up", lambda: _catch_up(slow).execute(), out)
+    assert entered.wait(15)
+    with psycopg.connect(_dsn()) as conn:  # PUT /jobs/{id}/our-team happens meanwhile
+        with conn.cursor() as cur:
+            cur.execute("UPDATE processing_jobs SET our_team_side = 0 WHERE id = %s", (world.job,))
+        conn.commit()
+    gate.set()
+    _join(run)
+    assert out["catch-up"] == 0  # side_changed: not done
+    assert _marker(world.job) == (None, None)
+    assert _count("SELECT COUNT(*) FROM player_analysis_games") == 0
+
+    fast = _Reader(document)
+    assert _catch_up(fast).execute() == 1  # no failure memo for a changed side: picked up at once
+    assert _marker(world.job)[0] == CALC
+    assert _count("SELECT COUNT(*) FROM player_analysis_games WHERE player_id = %s", world.white) == 1
+    assert _count("SELECT COUNT(*) FROM player_analysis_games WHERE player_id = %s", world.brown) == 0
+
+
+def test_a_catch_up_racing_a_job_done_sync_of_the_same_video_does_not_deadlock() -> None:
+    world = World()
+    entered, release = threading.Event(), threading.Event()
+
+    def hold(_player: str) -> None:  # the catch-up's sync sits inside its transaction, locks held
+        entered.set()
+        assert release.wait(30)
+
+    out: dict = {}
+    run = _in_thread("catch-up", lambda: _catch_up(_Reader(lambda j: _doc(world.brown, shots=2, made=1)),
+                                                   hook=hold).execute(), out)
+    assert entered.wait(15)
+    done_sync = _in_thread("job-done", lambda: _sync_for(lambda **_: _doc(world.brown, shots=2, made=1)
+                                                         ).execute(world.job), out)
+    _wait_until(_someone_waits_on_a_lock, what="the job-done sync to queue behind the catch-up")
+    release.set()
+    _join(run, done_sync)
+    assert out["catch-up"] == 1 and out["job-done"].status == "ok", out
+    assert _count("SELECT COUNT(*) FROM player_analysis_games WHERE video_id = %s", world.video) == 1
+    assert _count("SELECT COUNT(*) FROM player_analysis_shots WHERE video_id = %s", world.video) == 2
+    assert _marker(world.job)[0] == CALC
+
+
+# --- fixes from the red-team review --------------------------------------------------------------
+
+
+def test_a_transient_storage_error_on_numbers_neither_wipes_rows_nor_marks_the_analysis() -> None:
+    import io
+
+    from botocore.exceptions import ClientError
+
+    from src.application.stats.use_cases import GetGameStatsUseCase
+    from src.infrastructure.stats.r2_artifact_reader import R2ArtifactReader
+
+    world = World()
+    ok = _catch_up(_Reader(lambda j: _doc(world.brown, shots=2, made=1)))
+    assert ok.execute() == 1 and _stats_of(world.brown)["games_played"] == 1
+    ok.invalidate_team(world.team)  # any roster edit: the analysis is pending again
+
+    state = {"fail": True}
+
+    class _Client:
+        def get_object(self, *, Bucket, Key):
+            if Key.endswith("numbers.json") and state["fail"]:
+                raise ClientError({"Error": {"Code": "SlowDown", "Message": "throttled"}}, "GetObject")
+            if Key.endswith("player_summary.json") or Key.endswith("results.json"):
+                raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "no"}}, "GetObject")
+            document = '{"shots": []}' if Key.endswith("projected_shots.json") else "{}"
+            return {"Body": io.BytesIO(document.encode())}
+
+    class _Storage:
+        def _require_client(self):
+            return _Client(), type("S", (), {"bucket_name": "b"})()
+
+    connection = OperationConnection(_dsn())
+    game = GetGameStatsUseCase(jobs=PostgresJobRepository(connection=connection),
+                               artifacts=R2ArtifactReader(storage=_Storage()), team_access=_Access(),
+                               roster=PostgresPlayerRepository(connection=connection))
+    catch_up = _catch_up(lambda **kw: game.execute(**kw))
+    assert catch_up.execute() == 0  # the sync failed instead of reading "nobody is linked"
+    assert _count("SELECT COUNT(*) FROM player_analysis_games WHERE player_id = %s", world.brown) == 1
+    assert _count("SELECT COUNT(*) FROM player_analysis_shots WHERE player_id = %s", world.brown) == 2
+    assert _stats_of(world.brown)["games_played"] == 1
+    assert _marker(world.job)[0] is None
+
+
+def test_a_roster_change_during_a_running_sync_leaves_the_analysis_pending_and_the_next_run_fixes_it() -> None:
+    world = World()  # brown wears 7
+    entered, gate = threading.Event(), threading.Event()
+
+    def linked_to_7():
+        with psycopg.connect(_dsn()) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM players WHERE team_id = %s AND jersey_number = '7'", (world.team,))
+                row = cur.fetchone()
+        return _doc(str(row[0]), shots=2, made=1) if row else {"players": [], "shots": []}
+
+    def slow(**_):
+        document = linked_to_7()  # like the real box score: the roster is read first, the slow part follows
+        entered.set()
+        assert gate.wait(30)
+        return document
+
+    run = _catch_up(slow)
+    out: dict = {}
+    thread = _in_thread("startup", lambda: run.execute(), out)
+    assert entered.wait(15)
+    with psycopg.connect(_dsn()) as conn:  # the roster edit: brown is 8 now, nobody wears 7
+        conn.execute("UPDATE players SET jersey_number = '8' WHERE id = %s", (world.brown,))
+        conn.commit()
+    run.invalidate_team(world.team)
+    gate.set()
+    _join(thread)
+    assert _marker(world.job)[0] is None  # what was kept is stale, so it must not count as done
+
+    fresh = _Reader(lambda j: linked_to_7())
+    assert _catch_up(fresh).execute() == 1 and len(fresh.calls) == 1
+    assert _stats_of(world.brown)["games_played"] == 0
+    assert _marker(world.job)[0] == CALC
+
+
+def test_a_clear_before_the_read_does_not_block_the_marker() -> None:
+    world = World()
+    catch_up = _catch_up(_Reader(lambda j: _doc(world.brown, shots=1, made=1)))
+    catch_up.invalidate_team(world.team)
+    assert catch_up.execute() == 1 and _marker(world.job)[0] == CALC
+
+
+def test_the_catch_up_lock_is_held_inside_released_after_and_logs_when_busy(caplog) -> None:
+    import logging
+
+    from src.infrastructure.stats.postgres_catch_up_lock import CATCH_UP_LOCK_KEY, PostgresCatchUpLock
+
+    lock = PostgresCatchUpLock(_dsn())
+
+    def free_for_another_session() -> bool:
+        with psycopg.connect(_dsn(), autocommit=True) as conn:
+            if not conn.execute("SELECT pg_try_advisory_lock(%s)", (CATCH_UP_LOCK_KEY,)).fetchone()[0]:
+                return False
+            conn.execute("SELECT pg_advisory_unlock(%s)", (CATCH_UP_LOCK_KEY,))
+            return True
+
+    with caplog.at_level(logging.INFO):
+        with lock.try_acquire() as first:
+            assert first and not free_for_another_session()
+            with lock.try_acquire() as second:
+                assert second is False
+    assert any("not acquired" in record.getMessage() for record in caplog.records)
+    assert free_for_another_session()
+    with pytest.raises(RuntimeError):
+        with lock.try_acquire():
+            raise RuntimeError("boom")
+    assert free_for_another_session()
+
+
+def test_a_soft_deleted_video_is_not_pending() -> None:
+    world = World()
+    jobs = PostgresJobRepository(connection=OperationConnection(_dsn()))
+    assert [j.id for j in jobs.list_player_stats_pending(user_id=None, team_id=None, version=CALC, limit=5)] == [
+        world.job]
+    with psycopg.connect(_dsn()) as conn:
+        conn.execute("UPDATE videos SET deleted_at = NOW() WHERE id = %s", (world.video,))
+        conn.commit()
+    assert jobs.list_player_stats_pending(user_id=None, team_id=None, version=CALC, limit=5) == []
+    assert _catch_up(_Reader(lambda j: _doc(world.brown, shots=1, made=1))).execute() == 0
+
+
+def test_latest_means_the_same_in_the_job_listings_and_in_the_replace_when_created_at_ties() -> None:
+    world = World()
+    second = world.add_job_for(world.video, side=1)
+    with psycopg.connect(_dsn()) as conn:
+        conn.execute("UPDATE processing_jobs SET created_at = '2030-01-01T00:00:00Z' WHERE video_id = %s", (world.video,))
+        conn.commit()
+    jobs = PostgresJobRepository(connection=OperationConnection(_dsn()))
+    listed = [j.id for j in jobs.list_by_video(video_id=world.video, team_id=world.team)]
+    assert listed == sorted([world.job, second], reverse=True)  # same order as `created_at DESC, id DESC`
+    assert [j.id for j in jobs.list_done_by_team(team_id=world.team)][:2] == listed
+    newest = listed[0]
+    assert _replace(_repo(), world, job=newest, games=[], shots=[]).status == "ok"
+    assert _replace(_repo(), world, job=listed[1], games=[], shots=[]).status == "not_latest"
+
+
+# --- second red-team round -----------------------------------------------------------------------
+
+
+def test_an_older_read_finishing_after_a_fresh_marked_sync_cannot_overwrite_it() -> None:
+    world = World()  # brown wears 7, white wears 9
+    entered, gate = threading.Event(), threading.Event()
+
+    def linked_to_7():
+        with psycopg.connect(_dsn()) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM players WHERE team_id = %s AND jersey_number = '7'", (world.team,))
+                row = cur.fetchone()
+        return _doc(str(row[0]), shots=2, made=1) if row else {"players": [], "shots": []}
+
+    def slow(**_):
+        document = linked_to_7()  # the roster is read first (brown is 7), then the slow part
+        entered.set()
+        assert gate.wait(30)
+        return document
+
+    out: dict = {}
+    old = _in_thread("old", lambda: _sync_for(slow).execute(world.job), out)
+    assert entered.wait(15)
+    with psycopg.connect(_dsn()) as conn:  # roster edit: white takes number 7
+        conn.execute("UPDATE players SET jersey_number = '8' WHERE id = %s", (world.brown,))
+        conn.execute("UPDATE players SET jersey_number = '7' WHERE id = %s", (world.white,))
+        conn.commit()
+    _catch_up(_Reader(None)).invalidate_team(world.team)
+    fresh = _sync_for(lambda **_: linked_to_7()).execute(world.job)  # e.g. the team's catch-up
+    assert fresh.status == "ok" and _marker(world.job)[0] == CALC
+    assert _stats_of(world.white)["games_played"] == 1
+    gate.set()
+    _join(old)
+
+    assert out["old"].status == "stale"  # it kept nothing
+    assert _marker(world.job)[0] == CALC
+    assert _stats_of(world.brown)["games_played"] == 0 and _stats_of(world.white)["games_played"] == 1
+    assert _count("SELECT COUNT(*) FROM player_analysis_games WHERE player_id = %s", world.brown) == 0
+
+
+def test_setting_the_side_to_null_always_clears_the_rows_even_for_a_sync_that_began_earlier() -> None:
+    world = World()
+    repo = _repo()
+    started = repo.database_now()
+    assert _sync_for(lambda **_: _doc(world.brown, shots=1, made=1)).execute(world.job).status == "ok"
+    assert _count("SELECT COUNT(*) FROM player_analysis_games") == 1
+    with psycopg.connect(_dsn()) as conn:
+        conn.execute("UPDATE processing_jobs SET our_team_side = NULL WHERE id = %s", (world.job,))
+        conn.commit()
+    result = repo.replace_video(video_id=world.video, job_id=world.job, expected_side=None, games=[], shots=[],
+                                started=started)  # the marker is newer than `started`, and still it clears
+    assert result.status == "ok"
+    assert _count("SELECT COUNT(*) FROM player_analysis_games") == 0
+
+
+def test_a_stale_replace_is_not_tried_with_the_same_marker_twice() -> None:
+    """After a stale result the next sync (which starts later) passes."""
+
+    world = World()
+    repo = _repo()
+    started = repo.database_now()
+    assert _replace(repo, world, games=[_game(world, world.brown)], shots=[]).status == "ok"
+    assert repo.replace_video(video_id=world.video, job_id=world.job, expected_side=1, games=[], shots=[],
+                              started=started).status == "stale"
+    assert repo.replace_video(video_id=world.video, job_id=world.job, expected_side=1, games=[], shots=[],
+                              started=repo.database_now()).status == "ok"
+
+
+def test_a_storage_failure_on_an_optional_file_fails_the_sync_and_keeps_the_rows() -> None:
+    import io
+
+    from botocore.exceptions import ClientError
+
+    from src.application.stats.player_analysis import strict_game_stats_reader
+    from src.application.stats.use_cases import GetGameStatsUseCase
+    from src.infrastructure.stats.r2_artifact_reader import R2ArtifactReader
+
+    world = World()
+    ok = _catch_up(_Reader(lambda j: _doc(world.brown, shots=2, made=1)))
+    assert ok.execute() == 1
+    ok.invalidate_team(world.team)
+
+    class _Client:
+        def get_object(self, *, Bucket, Key):
+            if Key.endswith("player_summary.json"):
+                raise ClientError({"Error": {"Code": "SlowDown", "Message": "throttled"}}, "GetObject")
+            if Key.endswith("results.json"):
+                raise ClientError({"Error": {"Code": "NoSuchKey", "Message": "no"}}, "GetObject")
+            return {"Body": io.BytesIO(b'{"shots": []}' if Key.endswith("projected_shots.json") else b"{}")}
+
+    class _Storage:
+        def _require_client(self):
+            return _Client(), type("S", (), {"bucket_name": "b"})()
+
+    connection = OperationConnection(_dsn())
+    kwargs = dict(jobs=PostgresJobRepository(connection=connection), artifacts=R2ArtifactReader(storage=_Storage()),
+                  team_access=_Access(), roster=PostgresPlayerRepository(connection=connection))
+    GetGameStatsUseCase(**kwargs).execute(user_id=world.user, team_id=world.team, job_id=world.job)  # screens degrade
+
+    assert _catch_up(strict_game_stats_reader(**kwargs)).execute() == 0
+    assert _count("SELECT COUNT(*) FROM player_analysis_games WHERE player_id = %s", world.brown) == 1
+    assert _stats_of(world.brown)["games_played"] == 1 and _marker(world.job)[0] is None
+
+
+def test_clearing_markers_only_touches_done_jobs() -> None:
+    world = World()
+    _, running = world.add_extra_video("running", status="RUNNING", side=1)
+    jobs = PostgresJobRepository(connection=OperationConnection(_dsn()))
+    jobs.clear_player_stats_synced(team_id=world.team)
+    assert _marker(running) == (None, None)  # a job that can never be pending is left alone
+    assert _marker(world.job)[1] is not None

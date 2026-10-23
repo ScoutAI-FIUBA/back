@@ -44,6 +44,11 @@ any existing number.
 Player response includes:
 - `team_id`: nullable UUID, assigned team or `null`.
 - `jersey_number`: nullable string, the player's number or `null`.
+- `stats`: object, the player's kept statistics (same shape as `GET /players/{player_id}/stats`:
+  `games_played`, `points`, `field_goals`, `two_point`, `three_point`, `rebounds`, `assists`, `steals`,
+  `blocks`, `turnovers`, `free_throws`; shooting `percentage` is an integer 0..100). The measured fields come
+  from the video analyses and are kept up to date in the background; the response never waits for that, so
+  a player who has no analysed video yet shows zeros (`games_played: 0`).
 
 ## Endpoints
 
@@ -63,7 +68,8 @@ Player response includes:
     "weight_kg": 72,
     "primary_position": "RW",
     "jersey_number": "10",
-    "team_id": null
+    "team_id": null,
+    "stats": { "games_played": 0, "points": { "total": 0, "per_game": 0 }, "...": "..." }
   }
 }
 ```
@@ -87,11 +93,16 @@ Player response includes:
       "weight_kg": 72,
       "primary_position": "RW",
       "jersey_number": "10",
-      "team_id": "4c11b90f-a348-42c8-a6f0-2db1416cb6d5"
+      "team_id": "4c11b90f-a348-42c8-a6f0-2db1416cb6d5",
+      "stats": { "games_played": 3, "points": { "total": 24, "per_game": 8 }, "...": "..." }
     }
   ]
 }
 ```
+
+- Each player includes `stats` as last kept from the video analyses (no extra query, no object storage reads).
+  If some finished analysis has not been counted yet, the server catches up after the response is sent
+  (checked at most once per user per minute); the request never waits for it and never fails because of it.
 
 ### PUT /players/{player_id}/team/{team_id}
 - Associates a player to an existing team.
