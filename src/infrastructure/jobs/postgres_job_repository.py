@@ -256,7 +256,7 @@ class PostgresJobRepository:
                 """
                 SELECT * FROM processing_jobs
                  WHERE team_id = %(team_id)s::uuid AND status = 'DONE'
-                 ORDER BY created_at DESC
+                 ORDER BY created_at DESC, id DESC
                 """,
                 {"team_id": team_id},
             )
@@ -275,13 +275,44 @@ class PostgresJobRepository:
             )
             return [job for job in (_row_to_job(row) for row in cur.fetchall()) if job is not None]
 
+    def list_player_stats_pending(
+        self, *, user_id: str | None, team_id: str | None, version: int, limit: int
+    ) -> list[ProcessingJob]:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT * FROM processing_jobs
+                 WHERE status = 'DONE' AND our_team_side IS NOT NULL AND results_key IS NOT NULL
+                   AND player_stats_synced_version IS DISTINCT FROM %(version)s
+                   AND EXISTS (SELECT 1 FROM videos v
+                                WHERE v.id = processing_jobs.video_id AND v.deleted_at IS NULL)
+                   AND (%(user_id)s::text IS NULL OR requested_by_user_id = %(user_id)s::text)
+                   AND (%(team_id)s::uuid IS NULL OR team_id = %(team_id)s::uuid)
+                 ORDER BY created_at DESC
+                 LIMIT %(limit)s
+                """,
+                {"user_id": user_id, "team_id": team_id, "version": version, "limit": limit},
+            )
+            return [job for job in (_row_to_job(row) for row in cur.fetchall()) if job is not None]
+
+    def clear_player_stats_synced(self, *, team_id: str) -> None:
+        with self._connection.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE processing_jobs
+                   SET player_stats_synced_version = NULL, player_stats_synced_at = NOW()
+                 WHERE team_id = %(team_id)s::uuid AND status = 'DONE'
+                """,
+                {"team_id": team_id},
+            )
+
     def list_by_video(self, *, video_id: str, team_id: str) -> list[ProcessingJob]:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 SELECT * FROM processing_jobs
                  WHERE video_id = %(video_id)s::uuid AND team_id = %(team_id)s::uuid
-                 ORDER BY created_at DESC
+                 ORDER BY created_at DESC, id DESC
                 """,
                 {"video_id": video_id, "team_id": team_id},
             )

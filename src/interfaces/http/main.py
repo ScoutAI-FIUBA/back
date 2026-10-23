@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import logging
+import threading
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 import psycopg
 
@@ -15,6 +19,24 @@ from src.interfaces.http.errors.error_handlers import register_error_handlers
 from src.interfaces.http.middleware.auth_middleware import create_require_authenticated_user_middleware
 
 
+logger = logging.getLogger(__name__)
+
+
+def start_player_stats_catch_up(catch_up) -> threading.Thread | None:
+    """Backfill the kept player numbers in a daemon thread, so it never holds up startup or health checks.
+
+    The catch-up itself never raises; the guard only covers failing to start the thread.
+    """
+
+    try:
+        thread = threading.Thread(target=catch_up.execute, name="player-stats-catch-up", daemon=True)
+        thread.start()
+        return thread
+    except Exception:  # noqa: BLE001 - best effort, the app must start regardless
+        logger.exception("Could not start the player stats catch-up")
+        return None
+
+
 def create_app() -> FastAPI:
     """Builds the HTTP application and wires boundary contracts.
 
@@ -23,7 +45,12 @@ def create_app() -> FastAPI:
     health endpoints in a single composition root.
     """
 
-    app = FastAPI(title="ScoutAI Backend", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        start_player_stats_catch_up(deps.catch_up_player_analysis_use_case)
+        yield
+
+    app = FastAPI(title="ScoutAI Backend", version="0.1.0", lifespan=lifespan)
 
     jwt_secret = require_env("AUTH_JWT_SECRET")
     refresh_secret = require_env("AUTH_REFRESH_SECRET")

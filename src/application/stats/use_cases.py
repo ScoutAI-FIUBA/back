@@ -684,8 +684,11 @@ class GetCourtPositionsUseCase:
         except ArtifactReadError as exc:
             raise JobError(code=RESULTS_NOT_AVAILABLE, message=str(exc)) from exc
 
-        teams_document = self._artifacts.read_json(results_key=key, filename=TEAMS_FILE)
-        numbers_document = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
+        try:
+            teams_document = self._artifacts.read_json(results_key=key, filename=TEAMS_FILE)
+            numbers_document = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
+        except ArtifactReadError as exc:
+            raise JobError(code=RESULTS_NOT_AVAILABLE, message=str(exc)) from exc
         teams_of = team_by_track(teams_document)
         numbers_of = number_by_track(numbers_document)
         numbers_stable = number_by_stable(numbers_document)
@@ -808,8 +811,12 @@ class GetCourtPositionsUseCase:
         if not path_rows:
             return None
 
-        teams_of = team_by_track(self._artifacts.read_json(results_key=key, filename=TEAMS_FILE))
-        numbers_document = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
+        try:
+            teams_document = self._artifacts.read_json(results_key=key, filename=TEAMS_FILE)
+            numbers_document = self._artifacts.read_json(results_key=key, filename=NUMBERS_FILE)
+        except ArtifactReadError:
+            return None
+        teams_of = team_by_track(teams_document)
         numbers_stable = number_by_stable(numbers_document)
         summary_players = summary_players_by_stable(summary)
 

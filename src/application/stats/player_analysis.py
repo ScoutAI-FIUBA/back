@@ -1,24 +1,28 @@
 """Keeps what the analyses measured for each roster player, and serves it back.
 
-`SyncPlayerAnalysisUseCase` runs when a job finishes, when the scout marks which side is
-their team, and (in the background) after a roster change. It reuses the very computation
-behind the per-video box score, so the persisted numbers are that box score as it was at the
-moment of the last sync. They can lag behind the per-video screen: editing a player's jersey
-number or team changes who a track links to immediately on the screen, but the kept rows only
-follow once `ResyncTeamAnalysesUseCase` has re-run (bounded to the team's latest analyses),
-and analyses older than that bound keep their old links until the side is saved again. The read
-use cases then answer across all of a player's videos: aggregated totals and every shot's court
-position, ready to draw as green and red dots.
+`SyncPlayerAnalysisUseCase` runs when a job finishes and when the scout marks which side is
+their team. It reuses the very computation behind the per-video box score, so the persisted
+numbers are that box score as it was at the moment of the last sync. `CatchUpPlayerAnalysisUseCase`
+keeps them current by itself: each finished analysis carries a marker saying its player stats
+are done, and the catch-up runs the sync for every analysis without it (at startup, after a
+players listing finds something pending, and after a roster change clears a team's markers).
+The read use cases then answer across all of a player's videos: aggregated totals and every
+shot's court position, ready to draw as green and red dots.
 """
 
 from __future__ import annotations
 
 import logging
 import math
+import threading
+import time
 from abc import ABC, abstractmethod
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Callable
 
+from src.application.stats.ports import ArtifactReaderPort, ArtifactStorageError
 from src.application.players.errors import PLAYER_NOT_FOUND, PlayerError
 from src.application.players.ports import PlayerRepositoryPort
 from src.domain.jobs.entities import JobStatus, ProcessingJob
@@ -42,20 +46,29 @@ OK = "ok"
 FAILED = "failed"
 NOT_LATEST = "not_latest"
 SIDE_CHANGED = "side_changed"
+STALE = "stale"
 NO_SIDE = "no_side"
 NOT_READY = "not_ready"
 JOB_NOT_FOUND = "job_not_found"
 
+# Public name of a `stale` result in the team-side response: like a changed side, nothing was kept
+# and the work is redone automatically.
+PUBLIC_STATUS = {STALE: SIDE_CHANGED}
+
 # Values the table accepts for `outcome_confidence`; anything else is stored as unknown.
 _CONFIDENCES = frozenset({"detected", "inferred", "timeout", "unresolved"})
 
-# How many of a team's latest analyses a roster change re-syncs.
-RESYNC_LIMIT = 20
+# How many pending analyses one catch-up run keeps (newest first; the rest wait for the next run).
+CATCH_UP_LIMIT = 200
+# A user's listing checks for pending work at most this often.
+PENDING_CHECK_SECONDS = 60.0
+# A job whose sync failed is not retried for this long (e.g. result files missing in storage).
+FAILURE_MEMO_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
 class ReplaceResult:
-    """What `replace_video` did: `ok`, `not_latest` or `side_changed` (nothing was changed)."""
+    """What `replace_video` did: `ok`, or `not_latest`, `side_changed` or `stale` (nothing was changed)."""
 
     status: str
     players: list[str] = field(default_factory=list)
@@ -80,13 +93,23 @@ class PlayerAnalysisRepositoryPort(ABC):
         expected_side: int | None,
         games: list[PlayerGameRow],
         shots: list[PlayerShotRow],
+        started: datetime | None = None,
     ) -> ReplaceResult:
         """Replace everything kept for a video and refresh the affected players' totals.
 
         Serialised per video. Inside that lock it re-checks that `job_id` is still the latest
         DONE job of the video and that the job's team side is still `expected_side`; if not,
-        nothing is changed and the status says why.
+        nothing is changed and the status says why. The job's "player stats done" marker is only set
+        when it was not cleared after `started` (the database clock read before the sync began).
         """
+
+    @abstractmethod
+    def database_now(self) -> datetime:
+        """The database clock, the same one that stamps marker changes."""
+
+    @abstractmethod
+    def mark_superseded(self, *, video_id: str, job_id: str, started: datetime | None = None) -> bool:
+        """Mark an older analysis of a video as done (the newer one decides). False when it is not older."""
 
     @abstractmethod
     def refresh_players_for_video(self, video_id: str) -> list[str]:
@@ -99,6 +122,60 @@ class PlayerAnalysisRepositoryPort(ABC):
     @abstractmethod
     def totals(self, *, owner_user_id: str, player_id: str) -> dict:
         """Aggregated totals, per-zone and per-shot-type tallies and the list of games."""
+
+
+class _RecordingReader(ArtifactReaderPort):
+    """Delegates to the real reader and remembers whether storage itself failed on any read.
+
+    One per sync, so its state is private to that call (and to its thread).
+    """
+
+    def __init__(self, inner: ArtifactReaderPort) -> None:
+        self._inner = inner
+        self.storage_failures: list[ArtifactStorageError] = []
+
+    def _call(self, method, **kwargs):
+        try:
+            return method(**kwargs)
+        except ArtifactStorageError as exc:
+            self.storage_failures.append(exc)
+            raise
+
+    def read_json(self, *, results_key: str, filename: str) -> dict | None:
+        return self._call(self._inner.read_json, results_key=results_key, filename=filename)
+
+    def read_jsonl(self, *, results_key: str, filename: str, max_lines: int) -> list[dict]:
+        return self._call(self._inner.read_jsonl, results_key=results_key, filename=filename, max_lines=max_lines)
+
+
+def strict_game_stats_reader(*, jobs, artifacts: ArtifactReaderPort, team_access, roster) -> GameStatsReader:
+    """The box score for the sync: the same computation, but a storage failure on ANY file fails it.
+
+    The screens tolerate a missing optional file (player_summary.json, results.json, positions) and
+    degrade; the sync must not, because a degraded answer links fewer players and would shrink the
+    kept rows. Only the sync uses this; the endpoints keep their graceful degradation.
+    """
+
+    from src.application.stats.use_cases import GetGameStatsUseCase
+
+    def read(**kwargs) -> dict:
+        recording = _RecordingReader(artifacts)
+        stats = GetGameStatsUseCase(
+            jobs=jobs, artifacts=recording, team_access=team_access, roster=roster
+        ).execute(**kwargs)
+        if recording.storage_failures:
+            raise ArtifactStorageError("Object storage failed while reading this analysis; not keeping a partial answer.")
+        return stats
+
+    return read
+
+
+class CatchUpLockPort(ABC):
+    """One catch-up at a time across every worker and instance."""
+
+    @abstractmethod
+    def try_acquire(self) -> AbstractContextManager[bool]:
+        """Yields True while this caller holds the lock, False at once when someone else does."""
 
 
 def _int(value) -> int:
@@ -147,6 +224,8 @@ class SyncPlayerAnalysisUseCase:
         """Returns the status (and how many shots were kept); anything but `ok` changed nothing,
         except `no_side`, which clears the video's rows."""
 
+        # Before anything is read: a roster change after this instant must keep the result from counting as done.
+        started = self._analysis.database_now()
         job = self._jobs.get_by_id_unscoped(job_id=job_id)
         if job is None:
             return SyncResult(JOB_NOT_FOUND)
@@ -154,6 +233,7 @@ class SyncPlayerAnalysisUseCase:
             return SyncResult(NOT_READY)
         if not self._is_latest_done_for_video(job):
             # An older analysis of a video that has a newer one: the newer one decides.
+            self._analysis.mark_superseded(video_id=job.video_id, job_id=job.id, started=started)
             return SyncResult(NOT_LATEST)
 
         games: list[PlayerGameRow] = []
@@ -169,7 +249,7 @@ class SyncPlayerAnalysisUseCase:
         # Without a team side nothing can be tied to a roster player, and the video's
         # previous rows (from an older analysis) must not linger, so replace with nothing.
         replaced = self._analysis.replace_video(
-            video_id=job.video_id, job_id=job.id, expected_side=side, games=games, shots=shots
+            video_id=job.video_id, job_id=job.id, expected_side=side, games=games, shots=shots, started=started
         )
         if replaced.status != OK:
             return SyncResult(replaced.status)
@@ -285,7 +365,9 @@ class SyncPlayerAnalysisUseCase:
         return list(games.values()), shots, skipped
 
 
-def safe_sync(sync: SyncPlayerAnalysisUseCase | None, job_id: str) -> SyncResult | None:
+def safe_sync(
+    sync: SyncPlayerAnalysisUseCase | None, job_id: str, *, log_level: int = logging.ERROR
+) -> SyncResult | None:
     """Run a sync without ever failing the caller.
 
     Used from the job callbacks: a problem while keeping the player numbers must not turn a
@@ -298,39 +380,156 @@ def safe_sync(sync: SyncPlayerAnalysisUseCase | None, job_id: str) -> SyncResult
     try:
         return sync.execute(job_id)
     except Exception:  # noqa: BLE001 - deliberately broad, see docstring
-        logger.exception("Could not sync player analysis for job %s", job_id)
+        logger.log(log_level, "Could not sync player analysis for job %s", job_id, exc_info=True)
         return SyncResult(FAILED)
 
 
-class ResyncTeamAnalysesUseCase:
-    """Re-sync a team's latest analyses after its roster changed (a jersey, a player in or out).
+class CatchUpPlayerAnalysisUseCase:
+    """Brings the kept player numbers up to date for every analysis not marked as done.
 
-    Who a track links to depends on the roster, so the kept rows go stale when it changes.
-    Runs in the background, sequentially and best effort, bounded to the team's most recent
-    analyses that have a team side. It never raises.
+    The marker is written by the sync itself, in the same transaction as the rows, so "unmarked"
+    means "not kept yet with the current rules": it covers analyses that predate the feature,
+    syncs that failed, and a team whose markers a roster change cleared. Runs in the background
+    (startup, after a players listing, after a roster change), one run at a time across
+    instances, sequentially and best effort. It never raises into its caller.
     """
 
-    def __init__(self, *, jobs, sync: SyncPlayerAnalysisUseCase | None, limit: int = RESYNC_LIMIT) -> None:
+    def __init__(
+        self,
+        *,
+        jobs,
+        sync: SyncPlayerAnalysisUseCase | None,
+        lock: CatchUpLockPort | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        pending_check_seconds: float = PENDING_CHECK_SECONDS,
+        failure_memo_seconds: float = FAILURE_MEMO_SECONDS,
+    ) -> None:
         self._jobs = jobs
         self._sync = sync
-        self._limit = limit
+        self._lock = lock
+        self._clock = clock
+        self._pending_check_seconds = pending_check_seconds
+        self._failure_memo_seconds = failure_memo_seconds
+        # Shared by request threads and the background runs.
+        self._state = threading.Lock()
+        self._in_flight: set[str] = set()
+        self._failed_until: dict[str, float] = {}
+        self._checked_at: dict[str, float] = {}
+        self._failed_before: set[str] = set()  # jobs already reported once: their retries are only debug noise
 
-    def execute(self, team_id: str | None) -> int:
-        """Returns how many analyses were re-synced successfully."""
+    def pending(self, user_id: str) -> bool:
+        """Whether the user has analyses to catch up on; asks the database once per window per user.
 
-        if not team_id or self._sync is None:
+        Inside the window it answers False: whatever was found by the last check is already
+        scheduled. A failure to ask also answers False.
+        """
+
+        now = self._clock()
+        with self._state:
+            last = self._checked_at.get(user_id)
+            if last is not None and now - last < self._pending_check_seconds:
+                return False
+            self._checked_at[user_id] = now
+            if len(self._checked_at) > 1000:
+                self._checked_at = {
+                    key: at for key, at in self._checked_at.items() if now - at < self._pending_check_seconds
+                }
+            self._forget_expired_failures(now)
+            skipped = len(self._failed_until)
+            blocked = set(self._failed_until)
+        try:
+            found = self._jobs.list_player_stats_pending(
+                user_id=user_id, team_id=None, version=CALC_VERSION, limit=skipped + 1
+            )
+        except Exception:  # noqa: BLE001 - never into the request
+            logger.exception("Could not check pending player stats for user %s", user_id)
+            return False
+        return any(job.id not in blocked for job in found)
+
+    def invalidate_team(self, team_id: str | None) -> None:
+        """Forget that the team's analyses were kept (its roster changed). Never raises."""
+
+        if not team_id:
+            return
+        try:
+            self._jobs.clear_player_stats_synced(team_id=team_id)
+        except Exception:  # noqa: BLE001 - never into the request
+            logger.exception("Could not clear player stats markers for team %s", team_id)
+
+    def execute(
+        self, user_id: str | None = None, team_id: str | None = None, limit: int = CATCH_UP_LIMIT
+    ) -> int:
+        """Sync the pending analyses (of a user and/or a team, or all) one after another.
+
+        Returns how many are now done. Skips the whole run when another one holds the lock.
+        """
+
+        if self._sync is None:
             return 0
         try:
-            jobs = self._jobs.list_done_with_side_by_team(team_id=team_id, limit=self._limit)
-        except Exception:  # noqa: BLE001 - never into the request, see class docstring
-            logger.exception("Could not list analyses to re-sync for team %s", team_id)
+            if self._lock is None:
+                return self._run(user_id, team_id, limit)
+            with self._lock.try_acquire() as acquired:
+                if not acquired:
+                    return 0
+                return self._run(user_id, team_id, limit)
+        except Exception:  # noqa: BLE001 - never into the request or the startup, see class docstring
+            logger.exception("Player stats catch-up failed (user=%s, team=%s)", user_id, team_id)
             return 0
+
+    def _run(self, user_id: str | None, team_id: str | None, limit: int) -> int:
+        jobs = self._jobs.list_player_stats_pending(
+            user_id=user_id, team_id=team_id, version=CALC_VERSION, limit=limit
+        )
         done = 0
         for job in jobs:
-            result = safe_sync(self._sync, job.id)
-            if result is not None and result.status in (OK, NOT_LATEST):
+            if not self._begin(job.id):
+                continue
+            try:
+                result = safe_sync(self._sync, job.id, log_level=self._failure_log_level(job.id))
+            finally:
+                self._end(job.id)
+            if result is None:
+                continue
+            if result.status == FAILED:
+                self._remember_failure(job.id)
+            elif result.status in (OK, NOT_LATEST, NO_SIDE):
                 done += 1
         return done
+
+    def _begin(self, job_id: str) -> bool:
+        """False when the job is being synced right now or failed recently."""
+
+        now = self._clock()
+        with self._state:
+            self._forget_expired_failures(now)
+            if job_id in self._in_flight or job_id in self._failed_until:
+                return False
+            self._in_flight.add(job_id)
+            return True
+
+    def _end(self, job_id: str) -> None:
+        with self._state:
+            self._in_flight.discard(job_id)
+
+    def _failure_log_level(self, job_id: str) -> int:
+        """WARNING the first time a job fails, DEBUG for its retries (a broken analysis must not spam the logs)."""
+
+        with self._state:
+            return logging.DEBUG if job_id in self._failed_before else logging.WARNING
+
+    def _remember_failure(self, job_id: str) -> None:
+        with self._state:
+            if len(self._failed_before) > 10_000:
+                self._failed_before.clear()
+            self._failed_before.add(job_id)
+            self._failed_until[job_id] = self._clock() + self._failure_memo_seconds
+
+    def _forget_expired_failures(self, now: float) -> None:
+        """Caller holds `_state`."""
+
+        for job_id in [key for key, until in self._failed_until.items() if until <= now]:
+            del self._failed_until[job_id]
 
 
 class _PlayerReader:

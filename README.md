@@ -122,10 +122,32 @@ rebounds, assists, steals, blocks, turnovers and free throws are not measured an
   Setting the side on an older job of a video reports `player_stats_sync: "not_latest"` and changes nothing.
 - A re-run's DONE callback clears the video's player rows (sides are not stable between runs: side 0 of the old run
   is not side 0 of the new one) until the scout sets "our team" on the new job; the old numbers do not linger.
-- A jersey or roster change (creating, editing, moving to another team or deleting a player) triggers a background
-  re-sync of that team's analyses (the 20 most recent DONE jobs that have a side; best effort, never fails the
-  request). Older analyses keep their previous links until the side is saved again, so the stored numbers can lag
-  behind the per-video screen until the re-sync has run.
+- Each finished analysis carries an invisible marker (`processing_jobs.player_stats_synced_version` and
+  `player_stats_synced_at`, migration `007_processing_jobs_player_stats_sync.sql`; never returned by any API) that
+  says "player stats for this analysis are done". It is written by the sync itself, inside the same transaction as
+  the rows, and only if no roster change cleared it while the sync was reading (`player_stats_synced_at` is the
+  database-clock time of the last marker change). A background catch-up (`CatchUpPlayerAnalysisUseCase`) syncs every DONE analysis that has a side and no
+  marker for the current `CALC_VERSION` (newest first, up to 200 per run): at startup (this is the backfill of
+  analyses that predate the feature; a daemon thread, so it never delays startup or health checks), after
+  `GET /players` finds something pending (checked at most once per user per 60 s), and after a roster change.
+  Bumping `CALC_VERSION` makes every analysis pending again. `GET /players` serves `players.stats` as kept (it never
+  reads object storage while a user waits) and every player in the response includes `stats`.
+- A sync that began before a marker change (a roster change cleared it, or a newer sync already finished) keeps
+  nothing (`stale`; the team-side response reports it as `side_changed`) and the analysis is redone on the next
+  catch-up. The sync (not the screens) also fails whenever object storage itself errors on any file, including the
+  optional ones (`player_summary.json`, `results.json`, positions), so a transient error never shrinks the kept rows;
+  a file that is truly missing (`NoSuchKey`/404) is still ordinary.
+- Two things only checkable in production: run `SHOW idle_in_transaction_session_timeout;` on the app role (a short
+  timeout kills the catch-up's lock transaction mid-run; that is safe, the run just logs "catch-up failed" and
+  the next trigger resumes), and confirm that a missing R2 key answers `NoSuchKey`/404 and not 403 (a 403 would be
+  treated as a storage failure and the analysis would stay pending, retried every 10 minutes).
+- A jersey or roster change (creating, editing, moving to another team or deleting a player) clears that team's
+  markers and catches the team up in the background (best effort, never fails the request), so every analysis of
+  the team, old ones included, is linked to the roster as it is now. A roster edit that lands while a sync is
+  running can leave one analysis linked the old way for a moment; the next roster edit or re-saving the side fixes it.
+- Only one catch-up runs at a time across workers and instances (transaction-level `pg_try_advisory_xact_lock` on a dedicated connection, so it also works behind a transaction pooler; the others
+  skip and the next trigger picks the work up). An analysis whose sync fails (for example its result files are gone
+  from object storage) stays unmarked and is not retried for 10 minutes (in-memory memo, per process).
 - Syncs are serialised per video in the database (advisory lock) and re-check, inside that lock, that the job is still
   the latest DONE one and that its side did not change meanwhile; `players.stats` is recomputed under a row lock so
   parallel syncs of different videos of one player never lose each other's totals. Soft-deleting a video refreshes
@@ -133,7 +155,7 @@ rebounds, assists, steals, blocks, turnovers and free throws are not measured an
 - Rows ignore soft-deleted videos and are removed with the player or the job. A shot whose coordinates, shot value
   or distance are missing or not finite is not stored (and counted as skipped in the sync result).
 - A problem while keeping these rows never fails the job callback. `PUT /jobs/{id}/our-team` adds
-  `"player_stats_sync"` to its response: `ok`, `no_side`, `not_latest`, `side_changed`, `not_ready`, `job_not_found`
+  `"player_stats_sync"` to its response: `ok`, `no_side`, `not_latest`, `side_changed` (also when a concurrent roster change made the result obsolete), `not_ready`, `job_not_found`
   or `failed` (the sync is best effort; `failed` is logged and can be retried by saving the side again).
 - Units. `players.stats.*.percentage` keeps the existing integer percent (0 to 100) and its per-game values are whole
   numbers; `GET /players/{id}/analysis-stats` reports every shooting `pct` as a fraction (0 to 1, or null without

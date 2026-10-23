@@ -11,6 +11,10 @@ class ArtifactReadError(Exception):
     """The file exists but could not be read or parsed."""
 
 
+class ArtifactStorageError(ArtifactReadError):
+    """Object storage failed (timeout, throttling, credentials, connection), as opposed to a missing or bad file."""
+
+
 class RosterReaderPort(ABC):
     """Reads the scout's own players, to tie tracks to real names by number.
 
