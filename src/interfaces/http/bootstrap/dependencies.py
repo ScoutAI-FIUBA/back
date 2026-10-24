@@ -52,6 +52,7 @@ from src.application.matches.use_cases import (
     GetTeamStatsUseCase,
     ListMatchesUseCase,
     ReplaceMatchStatsUseCase,
+    UpdateMatchDetailsUseCase,
 )
 from src.application.players.use_cases import (
     AssignPlayerTeamUseCase,
@@ -103,6 +104,7 @@ from src.application.video.use_cases import (
     GetVideoUseCase,
     InitVideoUploadUseCase,
     ListVideosUseCase,
+    SetVideoMatchUseCase,
     UpdateVideoUseCase,
 )
 from src.infrastructure.auth.argon2_password_hasher import Argon2PasswordHasher
@@ -273,6 +275,7 @@ class HttpDependencies:
     get_match_use_case: GetMatchUseCase
     replace_match_stats_use_case: ReplaceMatchStatsUseCase
     get_match_stats_use_case: GetMatchStatsUseCase
+    update_match_use_case: UpdateMatchDetailsUseCase
     preview_stats_import_use_case: PreviewMatchStatsImportUseCase
     get_team_stats_use_case: GetTeamStatsUseCase
     init_video_upload_use_case: InitVideoUploadUseCase
@@ -282,6 +285,7 @@ class HttpDependencies:
     get_video_use_case: GetVideoUseCase
     update_video_use_case: UpdateVideoUseCase
     delete_video_use_case: DeleteVideoUseCase
+    set_video_match_use_case: SetVideoMatchUseCase
     create_clip_collection_use_case: CreateClipCollectionUseCase
     list_clip_collections_use_case: ListClipCollectionsUseCase
     get_clip_collection_detail_use_case: GetClipCollectionDetailUseCase
@@ -592,6 +596,7 @@ def build_http_dependencies(
         get_match_use_case=GetMatchUseCase(matches=matches_repo),
         replace_match_stats_use_case=ReplaceMatchStatsUseCase(matches=matches_repo, players=players_repo, ids=ids, uow=uow),
         get_match_stats_use_case=GetMatchStatsUseCase(matches=matches_repo),
+        update_match_use_case=UpdateMatchDetailsUseCase(matches=matches_repo, uow=uow),
         preview_stats_import_use_case=PreviewMatchStatsImportUseCase(
             parser=CabbBoxScoreParser(), teams=teams_repo, players=players_repo
         ),
@@ -634,6 +639,12 @@ def build_http_dependencies(
             team_access=team_access,
             uow=uow,
             on_deleted=_refresh_player_stats_of_video,
+        ),
+        set_video_match_use_case=SetVideoMatchUseCase(
+            videos=videos_repo,
+            matches=matches_repo,
+            team_access=team_access,
+            uow=uow,
         ),
         create_clip_collection_use_case=CreateClipCollectionUseCase(
             collections=clip_collections_repo,

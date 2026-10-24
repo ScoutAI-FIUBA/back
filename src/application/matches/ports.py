@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date
 from typing import Any
 
 from src.application.common.ports import IdGeneratorPort, UnitOfWorkPort
@@ -18,6 +19,19 @@ class MatchRepositoryPort(ABC):
 
     @abstractmethod
     def get_by_id(self, *, match_id: str, owner_user_id: str) -> Match | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_details(
+        self,
+        *,
+        match_id: str,
+        owner_user_id: str,
+        match_date: date | None,
+        update_description: bool,
+        description: str | None,
+    ) -> Match | None:
+        """Updates only the date and/or description; teams, stats, winner and participants are untouched."""
         raise NotImplementedError
 
     @abstractmethod

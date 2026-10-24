@@ -69,6 +69,7 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             get_match_use_case=deps.get_match_use_case,
             replace_match_stats_use_case=deps.replace_match_stats_use_case,
             get_match_stats_use_case=deps.get_match_stats_use_case,
+            update_match_use_case=deps.update_match_use_case,
             preview_stats_import_use_case=deps.preview_stats_import_use_case,
         )
     )
@@ -81,6 +82,7 @@ def wire_routers(app: FastAPI, deps: HttpDependencies) -> None:
             get_video_use_case=deps.get_video_use_case,
             update_video_use_case=deps.update_video_use_case,
             delete_video_use_case=deps.delete_video_use_case,
+            set_video_match_use_case=deps.set_video_match_use_case,
         )
     )
     app.include_router(

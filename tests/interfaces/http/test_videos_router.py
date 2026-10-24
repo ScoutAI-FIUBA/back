@@ -69,6 +69,7 @@ class _ReadyVideo:
     created_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     updated_at = datetime(2026, 1, 1, tzinfo=timezone.utc)
     thumbnail_key = None
+    match_id = None
 
     class _Status:
         value = "READY"
@@ -108,6 +109,7 @@ def _client_with(*, get_uc, complete_uc, list_uc=None) -> TestClient:
             get_video_use_case=get_uc,
             update_video_use_case=_UpdateUC(),
             delete_video_use_case=_DeleteUC(),
+            set_video_match_use_case=_UpdateUC(),
         )
     )
     return TestClient(app)
@@ -131,6 +133,7 @@ class TestVideosRouter(unittest.TestCase):
                 get_video_use_case=_GetUC(),
                 update_video_use_case=_UpdateUC(),
                 delete_video_use_case=_DeleteUC(),
+                set_video_match_use_case=_UpdateUC(),
             )
         )
         self.client = TestClient(app)

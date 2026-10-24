@@ -7,12 +7,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from src.application.video.errors import (
+    MATCH_NOT_FOUND,
     PLAYER_TEAM_MISMATCH,
     STORAGE_DELETE_FAILED,
     UPLOAD_NOT_INITIALIZED,
     VIDEO_NOT_FOUND,
     VIDEO_NOT_READY,
     VIDEO_STORAGE_KEY_CONFLICT,
+    VIDEO_TEAM_NOT_IN_MATCH,
     VideoError,
 )
 from src.application.video.ports import (
@@ -20,6 +22,7 @@ from src.application.video.ports import (
     TeamAccessPort,
     ThumbnailGeneratorPort,
     UnitOfWorkPort,
+    VideoMatchLookupPort,
     VideoRepositoryPort,
     VideoStorageKeyConflictError,
     VideoStoragePort,
@@ -80,6 +83,14 @@ class DeleteVideoCommand:
     user_id: str
     team_id: str
     video_id: str
+
+
+@dataclass(frozen=True)
+class SetVideoMatchCommand:
+    user_id: str
+    team_id: str
+    video_id: str
+    match_id: str | None
 
 
 class InitVideoUploadUseCase:
@@ -340,3 +351,44 @@ class DeleteVideoUseCase:
             with contextlib.suppress(Exception):
                 self._storage.delete_video(video.thumbnail_key)
         return {"deleted": True, "compensation_pending": False}
+
+
+class SetVideoMatchUseCase:
+    """Links a video to one of the owner's matches, or clears the link (match_id None)."""
+
+    def __init__(
+        self,
+        *,
+        videos: VideoRepositoryPort,
+        matches: VideoMatchLookupPort,
+        team_access: TeamAccessPort,
+        uow: UnitOfWorkPort,
+    ) -> None:
+        self._videos = videos
+        self._matches = matches
+        self._team_access = team_access
+        self._uow = uow
+
+    def execute(self, command: SetVideoMatchCommand) -> Video:
+        self._team_access.assert_access(user_id=command.user_id, team_id=command.team_id)
+        with self._uow.transaction():
+            video = self._videos.get_by_id(video_id=command.video_id, team_id=command.team_id)
+            if video is None or video.status == VideoStatus.DELETED:
+                raise VideoError(code=VIDEO_NOT_FOUND, message="Video not found")
+            if command.match_id is not None:
+                teams = self._matches.get_teams(match_id=command.match_id, owner_user_id=command.user_id)
+                if teams is None:
+                    raise VideoError(code=MATCH_NOT_FOUND, message="Match not found")
+                if video.team_id not in teams:
+                    raise VideoError(
+                        code=VIDEO_TEAM_NOT_IN_MATCH,
+                        message="The video's team does not play in this match",
+                    )
+            updated = self._videos.set_match(
+                video_id=command.video_id,
+                team_id=command.team_id,
+                match_id=command.match_id,
+            )
+            if updated is None:
+                raise VideoError(code=VIDEO_NOT_FOUND, message="Video not found")
+        return updated

@@ -80,6 +80,15 @@ Note: CORS preflight `OPTIONS` requests are also allowed without auth.
   - `country` (TEXT, not null)
   - `created_at` (TIMESTAMPTZ, not null)
 
+### Matches (edit and video link)
+
+| Method | Path | Auth required | Purpose |
+| --- | --- | --- | --- |
+| `PATCH` | `/matches/{match_id}` | Yes | Edit only `match_date` and `description` (`null` clears the description, an omitted field is kept; max 2000 chars). Teams, winner, stats and participants are untouched. `404 MATCH_NOT_FOUND` for missing or foreign matches. There is no `DELETE /matches/{id}`. |
+| `PUT` | `/videos/{video_id}/match` | Yes | Link a video to a match (`{team_id, match_id}`) or clear it (`match_id: null`). See `specs/api/videos.md`. |
+
+- Videos expose `match_id` (nullable). Migration `src/infrastructure/video/migrations/004_video_match_link.sql` is additive and idempotent; back up the database before deploying because the container start command applies migrations.
+
 ### Clip collections
 
 | Method | Path | Auth required | Purpose |

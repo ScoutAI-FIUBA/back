@@ -45,6 +45,7 @@ def _client(*, with_import: bool = True, teams=None) -> TestClient:
             get_match_use_case=unused,
             replace_match_stats_use_case=unused,
             get_match_stats_use_case=unused,
+            update_match_use_case=unused,
             preview_stats_import_use_case=(
                 PreviewMatchStatsImportUseCase(parser=CabbBoxScoreParser(), teams=teams or _Teams(), players=_Players())
                 if with_import

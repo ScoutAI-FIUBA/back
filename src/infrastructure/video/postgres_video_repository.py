@@ -44,6 +44,7 @@ def _row_to_video(row: dict[str, Any] | None) -> Video | None:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         thumbnail_key=row.get("thumbnail_key"),
+        match_id=str(row["match_id"]) if row.get("match_id") is not None else None,
     )
 
 
@@ -237,6 +238,20 @@ class PostgresVideoRepository:
                 RETURNING *
                 """,
                 {"video_id": video_id, "team_id": team_id, "thumbnail_key": thumbnail_key},
+            )
+            return _row_to_video(cur.fetchone())
+
+    def set_match(self, *, video_id: str, team_id: str, match_id: str | None) -> Video | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE videos
+                SET match_id = %(match_id)s::uuid,
+                    updated_at = NOW()
+                WHERE id = %(video_id)s::uuid AND team_id = %(team_id)s::uuid AND deleted_at IS NULL
+                RETURNING *
+                """,
+                {"video_id": video_id, "team_id": team_id, "match_id": match_id},
             )
             return _row_to_video(cur.fetchone())
 

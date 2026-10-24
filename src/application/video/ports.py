@@ -76,6 +76,17 @@ class VideoRepositoryPort(ABC):
         thumbnail_key: str,
     ) -> Video | None: ...
 
+    @abstractmethod
+    def set_match(self, *, video_id: str, team_id: str, match_id: str | None) -> Video | None: ...
+
+
+class VideoMatchLookupPort(ABC):
+    """Read-only view of the owner's matches, as needed to link a video."""
+
+    @abstractmethod
+    def get_teams(self, *, match_id: str, owner_user_id: str) -> tuple[str, str] | None:
+        """Returns (home_team_id, away_team_id) of an owned match, or None."""
+
 
 class ThumbnailGeneratorPort(ABC):
     @abstractmethod
@@ -125,6 +136,7 @@ __all__ = [
     "TeamAccessPort",
     "ThumbnailGeneratorPort",
     "UnitOfWorkPort",
+    "VideoMatchLookupPort",
     "VideoRepositoryPort",
     "VideoStoragePort",
 ]

@@ -19,6 +19,8 @@ from src.application.video.use_cases import (
     InitVideoUploadCommand,
     InitVideoUploadUseCase,
     ListVideosUseCase,
+    SetVideoMatchCommand,
+    SetVideoMatchUseCase,
     UpdateVideoCommand,
     UpdateVideoUseCase,
 )
@@ -58,6 +60,11 @@ class UpdateVideoPayload(BaseModel):
     player_ids: list[UUID] | None = None
 
 
+class SetVideoMatchPayload(BaseModel):
+    team_id: UUID
+    match_id: UUID | None
+
+
 def _video_to_dict(video) -> dict[str, object]:
     return {
         "id": video.id,
@@ -74,6 +81,7 @@ def _video_to_dict(video) -> dict[str, object]:
         "upload_expires_at": video.upload_expires_at.isoformat() if video.upload_expires_at else None,
         "created_at": video.created_at.isoformat(),
         "updated_at": video.updated_at.isoformat(),
+        "match_id": video.match_id,
     }
 
 
@@ -86,6 +94,7 @@ def create_videos_router(
     get_video_use_case: GetVideoUseCase,
     update_video_use_case: UpdateVideoUseCase,
     delete_video_use_case: DeleteVideoUseCase,
+    set_video_match_use_case: SetVideoMatchUseCase,
 ) -> APIRouter:
     router = APIRouter(prefix="/videos", tags=["videos"])
 
@@ -188,6 +197,23 @@ def create_videos_router(
                     title=payload.title,
                     description=payload.description,
                     player_ids=[str(player_id) for player_id in payload.player_ids] if payload.player_ids else None,
+                )
+            )
+            return {"video": _video_to_dict(video)}
+        except VideoError as exc:
+            return JSONResponse(status_code=video_error_http_status(exc.code), content=exc.to_envelope())
+
+    @router.put("/{video_id}/match", response_model=None)
+    def set_video_match(video_id: UUID, payload: SetVideoMatchPayload, request: Request):
+        # Dedicated endpoint: PATCH treats a missing/None field as "unchanged", but here
+        # an explicit null must clear the link.
+        try:
+            video = set_video_match_use_case.execute(
+                SetVideoMatchCommand(
+                    user_id=str(request.state.user_id),
+                    team_id=str(payload.team_id),
+                    video_id=str(video_id),
+                    match_id=str(payload.match_id) if payload.match_id is not None else None,
                 )
             )
             return {"video": _video_to_dict(video)}
