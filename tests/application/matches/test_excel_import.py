@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import uuid
 from types import SimpleNamespace as NS
 
 from src.application.matches.errors import (
@@ -207,6 +208,25 @@ class TestPreviewUseCase(unittest.TestCase):
         preview = _use_case().execute(PreviewStatsImportCommand(user_id="u", data=as_xlsx(rows), home_team_id=HOME))
         self.assertEqual(preview.stats["teams"]["HOME"]["name"], "Club Alfa")
         self.assertEqual(preview.stats["teams"]["AWAY"]["name"], "Club Beta")
+
+    def test_teams_listed_with_uuid_ids_are_found_by_their_string_id(self) -> None:
+        # psycopg returns UUID columns as uuid.UUID while the HTTP layer passes the ids as strings.
+        home, away = uuid.uuid4(), uuid.uuid4()
+
+        class UuidTeams:
+            def list_by_owner(self, *, owner_user_id):
+                return [NS(id=home, name="Club Alfa"), NS(id=away, name="Club Beta")]
+
+        use_case = PreviewMatchStatsImportUseCase(parser=CabbBoxScoreParser(), teams=UuidTeams(), players=_NoRoster())
+        preview = use_case.execute(
+            PreviewStatsImportCommand(user_id="u", data=as_xlsx(grid()), home_team_id=str(home), away_team_id=str(away))
+        )
+        self.assertEqual(preview.stats["teams"]["HOME"]["name"], "Club Alfa")
+        with self.assertRaises(MatchError) as caught:
+            use_case.execute(
+                PreviewStatsImportCommand(user_id="u", data=as_xlsx(grid()), home_team_id=str(uuid.uuid4()))
+            )
+        self.assertEqual(caught.exception.code, TEAM_NOT_FOUND)
 
     def test_inconsistent_points_are_reported(self) -> None:
         preview = _use_case().execute(
