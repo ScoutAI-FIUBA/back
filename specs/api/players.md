@@ -40,6 +40,8 @@ Field constraints:
 with just a name (and a jersey number) and completed later. `PUT` is a full replace, so omitting one of them there
 clears it to `null`. Responses return `null` for the ones not set.
 
+Jersey numbers are compared by value where they are matched (roster skip in `POST /players/bulk`, linking in the stats import preview): `"07"` and `"7"` are the same number, while `"0"` and `"00"` stay distinct.
+
 `jersey_number` is text rather than an integer so that `"00"` stays distinct from
 `"0"`, and so the value matches the string form the CV pipeline reads from
 jerseys. Numeric JSON input is coerced to text (`7` becomes `"7"`) and a blank or

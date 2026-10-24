@@ -101,6 +101,30 @@ class TestPlayerUseCases(unittest.TestCase):
         self.assertEqual(result.created[0].owner_user_id, "user-1")
         self.assertEqual(teams.locked, ["team-1"])
 
+    def test_roster_treats_07_and_7_as_the_same_jersey(self) -> None:
+        repo = _RosterRepo()
+        repo.by_id["old"] = Player(
+            id="old", first_name="O", last_name="P", jersey_number="7", owner_user_id="user-1", team_id="team-1"
+        )
+        use_case = CreateTeamRosterUseCase(
+            players=repo, teams=_Teams({("team-1", "user-1")}), ids=_CountingIds(), uow=_Uow()
+        )
+        result = use_case.execute(
+            CreateTeamRosterCommand(
+                user_id="user-1",
+                team_id="team-1",
+                players=[RosterPlayerInput("A", "B", "07"), RosterPlayerInput("C", "D", "08"), RosterPlayerInput("E", "F", "8")],
+            )
+        )
+        self.assertEqual(result.skipped_jersey_numbers, ["07", "8"])
+        self.assertEqual([p.jersey_number for p in result.created], ["08"])
+
+    def test_zero_and_double_zero_stay_distinct(self) -> None:
+        from src.domain.players.jersey import normalize_jersey_number
+
+        self.assertNotEqual(normalize_jersey_number("0"), normalize_jersey_number("00"))
+        self.assertEqual(normalize_jersey_number("07"), normalize_jersey_number("7"))
+
     def test_roster_for_unknown_team_is_not_found(self) -> None:
         repo = _RosterRepo()
         use_case = CreateTeamRosterUseCase(players=repo, teams=_Teams(set()), ids=_CountingIds(), uow=_Uow())

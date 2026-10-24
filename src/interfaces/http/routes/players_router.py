@@ -39,6 +39,7 @@ from src.application.players.use_cases import (
     UpdatePlayerCommand,
     UpdatePlayerUseCase,
 )
+from src.domain.players.jersey import normalize_jersey_number
 from src.interfaces.http.schemas.player_analysis import AnalysisStatsResponse, ShotChartResponse
 
 
@@ -63,7 +64,7 @@ class BulkPlayersPayload(BaseModel):
     @field_validator("players")
     @classmethod
     def _jersey_numbers_are_unique(cls, players: list[RosterPlayerPayload]) -> list[RosterPlayerPayload]:
-        numbers = [player.jersey_number for player in players]
+        numbers = [normalize_jersey_number(player.jersey_number) for player in players]
         if len(set(numbers)) != len(numbers):
             raise ValueError("jersey_number must be unique within the request")
         return players

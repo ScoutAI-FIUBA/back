@@ -228,6 +228,19 @@ class TestPreviewUseCase(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, TEAM_NOT_FOUND)
 
+    def test_a_file_jersey_with_a_leading_zero_links_to_the_roster_number(self) -> None:
+        from src.application.matches.excel_import import PreviewMatchStatsImportUseCase as UseCase
+
+        class Roster:
+            def list_by_owner_and_team(self, *, owner_user_id, team_id):
+                return [NS(id="p4", first_name="Uno", last_name="Alfa", jersey_number="04")]
+
+        rows = grid(home_players=[("4", "ALFA, UNO", *HOME_PLAYERS[0][2:])])
+        preview = UseCase(parser=CabbBoxScoreParser(), teams=_Teams(), players=Roster()).execute(
+            PreviewStatsImportCommand(user_id="u", data=as_xlsx(rows), home_team_id=HOME, away_team_id=AWAY)
+        )
+        self.assertTrue(any(entry["player_id"] == "p4" for entry in preview.report["linked_players"]))
+
     def test_inconsistent_points_are_reported(self) -> None:
         preview = _use_case().execute(
             PreviewStatsImportCommand(user_id="u", data=as_xlsx(grid(home_points=99)), home_team_id=HOME, away_team_id=AWAY)

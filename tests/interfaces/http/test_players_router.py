@@ -244,6 +244,11 @@ class TestBulkRoster(unittest.TestCase):
         self.assertEqual(client.post("/players/bulk", json=_bulk(["7", "7"])).status_code, 422)
         self.assertEqual(repo.by_id, {})
 
+    def test_jerseys_that_differ_only_by_a_leading_zero_are_duplicates(self) -> None:
+        client, repo = self._client()
+        self.assertEqual(client.post("/players/bulk", json=_bulk(["7", "07"])).status_code, 422)
+        self.assertEqual(repo.by_id, {})
+
     def test_size_and_jersey_limits(self) -> None:
         client, _ = self._client()
         self.assertEqual(client.post("/players/bulk", json=_bulk([str(n) for n in range(31)])).status_code, 422)

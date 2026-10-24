@@ -11,6 +11,7 @@ from src.application.players.errors import (
 )
 from src.application.players.ports import IdGeneratorPort, PlayerRepositoryPort, UnitOfWorkPort
 from src.application.team.ports import TeamRepositoryPort
+from src.domain.players.jersey import normalize_jersey_number
 from src.domain.players.entities import Player, build_empty_player_stats
 from src.domain.players.positions import VALID_POSITION_CODES, is_valid_position
 
@@ -207,17 +208,18 @@ class CreateTeamRosterUseCase:
             if not self._teams.lock_owned(team_id=command.team_id, owner_user_id=command.user_id):
                 raise PlayerError(code=TEAM_NOT_FOUND, message="Team not found")
             taken = {
-                player.jersey_number
+                normalize_jersey_number(player.jersey_number)
                 for player in self._players.list_by_owner_and_team(
                     owner_user_id=command.user_id, team_id=command.team_id
                 )
                 if player.jersey_number is not None
             }
             for entry in command.players:
-                if entry.jersey_number in taken:
+                number = normalize_jersey_number(entry.jersey_number)
+                if number in taken:
                     skipped.append(entry.jersey_number)
                     continue
-                taken.add(entry.jersey_number)
+                taken.add(number)
                 created.append(
                     self._players.create(
                         Player(
