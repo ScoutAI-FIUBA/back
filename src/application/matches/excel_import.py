@@ -115,7 +115,7 @@ class PreviewMatchStatsImportUseCase:
             raise MatchError(code=code, message=str(exc)) from None
 
         warnings: list[str] = []
-        owned = {team.id: team for team in self._teams.list_by_owner(owner_user_id=command.user_id)}
+        owned = {str(team.id): team for team in self._teams.list_by_owner(owner_user_id=command.user_id)}
         selected = {"HOME": command.home_team_id, "AWAY": command.away_team_id}
         for team_id in selected.values():
             if team_id is not None and team_id not in owned:
