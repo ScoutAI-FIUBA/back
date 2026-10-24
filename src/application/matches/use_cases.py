@@ -28,6 +28,16 @@ class CreateMatchCommand:
 
 
 @dataclass(frozen=True)
+class UpdateMatchDetailsCommand:
+    user_id: str
+    match_id: str
+    match_date: date | None = None
+    # description may legitimately be None (clear it), so "not provided" needs its own flag.
+    update_description: bool = False
+    description: str | None = None
+
+
+@dataclass(frozen=True)
 class ReplaceMatchParticipantInput:
     team_side: str
     display_name: str
@@ -87,6 +97,31 @@ class CreateMatchUseCase:
                     description=command.description,
                 )
             )
+
+
+class UpdateMatchDetailsUseCase:
+    """Edits only the date and description. Teams stay immutable: changing them would
+    invalidate the stored stats, winner, participants and linked videos."""
+
+    def __init__(self, *, matches: MatchRepositoryPort, uow: UnitOfWorkPort) -> None:
+        self._matches = matches
+        self._uow = uow
+
+    def execute(self, command: UpdateMatchDetailsCommand) -> Match:
+        with self._uow.transaction():
+            if command.match_date is None and not command.update_description:
+                match = self._matches.get_by_id(match_id=command.match_id, owner_user_id=command.user_id)
+            else:
+                match = self._matches.update_details(
+                    match_id=command.match_id,
+                    owner_user_id=command.user_id,
+                    match_date=command.match_date,
+                    update_description=command.update_description,
+                    description=command.description,
+                )
+        if match is None:
+            raise MatchError(code=MATCH_NOT_FOUND, message="Match not found")
+        return match
 
 
 class ListMatchesUseCase:

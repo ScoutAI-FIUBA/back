@@ -128,6 +128,24 @@
   - `404 VIDEO_NOT_FOUND`
   - `422 PLAYER_TEAM_MISMATCH`
 
+### PUT /videos/{video_id}/match
+- Links the video to one of the user's matches, or clears the link. Dedicated endpoint because PATCH treats a missing/`null` field as "unchanged", while here `null` must clear.
+- A video belongs to at most one match; a match can have many videos. Linking to another match overwrites the previous link. Deleting is not involved: the link is a nullable `videos.match_id`.
+- Body (both fields required; `match_id: null` clears):
+
+```json
+{ "team_id": "00000000-0000-4000-8000-000000000001", "match_id": "00000000-0000-4000-8000-0000000000aa" }
+```
+
+- `200 OK`: `{ "video": { ..., "match_id": "00000000-0000-4000-8000-0000000000aa" } }`
+- Rules: the video must belong to `team_id` and the user and not be deleted; the match must be owned by the user; the video's team must be the match's home or away team.
+- Errors:
+  - `404 TEAM_NOT_FOUND` (team not owned by the user)
+  - `404 VIDEO_NOT_FOUND` (also when `team_id` is not the video's team, or the video is deleted)
+  - `404 MATCH_NOT_FOUND` (missing or another user's match)
+  - `422 VIDEO_TEAM_NOT_IN_MATCH`
+  - `422` (FastAPI validation) for malformed UUIDs or missing fields
+
 ### DELETE /videos/{video_id}
 - Query: `team_id` (required UUID)
 - Success variants:
@@ -141,9 +159,12 @@
 ## Persistence and migrations
 
 - Migration: `src/infrastructure/video/migrations/001_video_management_foundation.sql`
+- `src/infrastructure/video/migrations/004_video_match_link.sql` (additive and idempotent): `videos.match_id UUID NULL REFERENCES matches(id) ON DELETE SET NULL` plus a partial index. Existing rows get `NULL`; nothing is dropped, rewritten or backfilled. It must run after the matches migrations (`scripts/apply_migrations.py` already orders them that way).
 - Tables:
   - `videos`
   - `video_players`
+
+Every video object returned by the API includes `match_id` (UUID string or `null`). Clients that want the videos of a match filter `GET /videos?team_id=` by `match_id`.
 
 ## Operational notes
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+from datetime import date
 from typing import Any, Protocol
 
 from psycopg.rows import dict_row
@@ -97,6 +98,39 @@ class PostgresMatchRepository:
             cur.execute(
                 "SELECT * FROM matches WHERE id = %(id)s AND owner_user_id = %(owner)s",
                 {"id": match_id, "owner": owner_user_id},
+            )
+            return _row_to_match(cur.fetchone())
+
+    def get_teams(self, *, match_id: str, owner_user_id: str) -> tuple[str, str] | None:
+        match = self.get_by_id(match_id=match_id, owner_user_id=owner_user_id)
+        return None if match is None else (match.home_team_id, match.away_team_id)
+
+    def update_details(
+        self,
+        *,
+        match_id: str,
+        owner_user_id: str,
+        match_date: date | None,
+        update_description: bool,
+        description: str | None,
+    ) -> Match | None:
+        with self._connection.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE matches
+                SET match_date = COALESCE(%(match_date)s, match_date),
+                    description = CASE WHEN %(update_description)s THEN %(description)s ELSE description END,
+                    updated_at = NOW()
+                WHERE id = %(id)s AND owner_user_id = %(owner)s
+                RETURNING *
+                """,
+                {
+                    "id": match_id,
+                    "owner": owner_user_id,
+                    "match_date": match_date,
+                    "update_description": update_description,
+                    "description": description,
+                },
             )
             return _row_to_match(cur.fetchone())
 

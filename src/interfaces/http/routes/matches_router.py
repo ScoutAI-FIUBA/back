@@ -7,7 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from src.application.matches.errors import MatchError, match_error_http_status
 from src.application.matches.excel_import import PreviewMatchStatsImportUseCase, PreviewStatsImportCommand
@@ -20,6 +20,8 @@ from src.application.matches.use_cases import (
     ReplaceMatchParticipantInput,
     ReplaceMatchStatsCommand,
     ReplaceMatchStatsUseCase,
+    UpdateMatchDetailsCommand,
+    UpdateMatchDetailsUseCase,
 )
 
 
@@ -33,6 +35,21 @@ class CreateMatchPayload(BaseModel):
     away_team_id: UUID
     match_date: date
     description: str | None = Field(default=None, max_length=2000)
+
+
+class UpdateMatchPayload(BaseModel):
+    # Teams are immutable: unknown fields (home_team_id, ...) must fail loudly, not be ignored.
+    model_config = ConfigDict(extra="forbid")
+
+    match_date: date | None = None
+    description: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _date_cannot_be_null(self) -> "UpdateMatchPayload":
+        # Omitted keeps the date; an explicit null has no meaning for a required field.
+        if "match_date" in self.model_fields_set and self.match_date is None:
+            raise ValueError("match_date cannot be null")
+        return self
 
 
 class MatchParticipantPayload(BaseModel):
@@ -88,6 +105,7 @@ def create_matches_router(
     get_match_use_case: GetMatchUseCase,
     replace_match_stats_use_case: ReplaceMatchStatsUseCase,
     get_match_stats_use_case: GetMatchStatsUseCase,
+    update_match_use_case: UpdateMatchDetailsUseCase,
     preview_stats_import_use_case: PreviewMatchStatsImportUseCase | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/matches", tags=["matches"])
@@ -123,6 +141,22 @@ def create_matches_router(
     def get_match(match_id: UUID, request: Request):
         try:
             match = get_match_use_case.execute(user_id=str(request.state.user_id), match_id=str(match_id))
+            return {"match": _to_match_payload(match)}
+        except MatchError as exc:
+            return JSONResponse(status_code=match_error_http_status(exc.code), content=exc.to_envelope())
+
+    @router.patch("/{match_id}", response_model=None)
+    def update_match(match_id: UUID, payload: UpdateMatchPayload, request: Request):
+        try:
+            match = update_match_use_case.execute(
+                UpdateMatchDetailsCommand(
+                    user_id=str(request.state.user_id),
+                    match_id=str(match_id),
+                    match_date=payload.match_date,
+                    update_description="description" in payload.model_fields_set,
+                    description=payload.description,
+                )
+            )
             return {"match": _to_match_payload(match)}
         except MatchError as exc:
             return JSONResponse(status_code=match_error_http_status(exc.code), content=exc.to_envelope())

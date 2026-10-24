@@ -31,3 +31,4 @@ class Video:
     created_at: datetime
     updated_at: datetime
     thumbnail_key: str | None = None
+    match_id: str | None = None

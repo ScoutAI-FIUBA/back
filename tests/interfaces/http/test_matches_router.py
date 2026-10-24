@@ -14,6 +14,7 @@ from src.application.matches.use_cases import (
     GetMatchUseCase,
     ListMatchesUseCase,
     ReplaceMatchStatsUseCase,
+    UpdateMatchDetailsUseCase,
 )
 from src.domain.matches.entities import Match, MatchParticipant, MatchStatsView
 from src.domain.players.entities import Player
@@ -55,6 +56,19 @@ class _MatchRepo:
     def get_by_id(self, *, match_id: str, owner_user_id: str) -> Match | None:
         if self.match.id != match_id or self.match.owner_user_id != owner_user_id:
             return None
+        return self.match
+
+    def update_details(self, *, match_id, owner_user_id, match_date, update_description, description):
+        found = self.get_by_id(match_id=match_id, owner_user_id=owner_user_id)
+        if found is None:
+            return None
+        self.match = Match(
+            **{
+                **found.__dict__,
+                "match_date": match_date or found.match_date,
+                "description": description if update_description else found.description,
+            }
+        )
         return self.match
 
     def replace_stats(self, *, match_id: str, owner_user_id: str, stats, winner_team_id, participants):
@@ -137,6 +151,7 @@ def _build_client(*, players: _PlayerRepo | None = None) -> TestClient:
             get_match_use_case=GetMatchUseCase(matches=match_repo),
             replace_match_stats_use_case=ReplaceMatchStatsUseCase(matches=match_repo, players=player_repo, ids=ids, uow=uow),
             get_match_stats_use_case=GetMatchStatsUseCase(matches=match_repo),
+            update_match_use_case=UpdateMatchDetailsUseCase(matches=match_repo, uow=uow),
         )
     )
     return TestClient(app)
