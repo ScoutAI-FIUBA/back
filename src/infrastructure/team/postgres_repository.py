@@ -147,3 +147,11 @@ class PostgresTeamRepository:
                 {"id": team_id, "owner": owner_user_id},
             )
             return cur.fetchone() is not None
+
+    def lock_owned(self, *, team_id: str, owner_user_id: str) -> bool:
+        with self._connection.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM teams WHERE id = %(id)s AND owner_user_id = %(owner)s FOR UPDATE",
+                {"id": team_id, "owner": owner_user_id},
+            )
+            return cur.fetchone() is not None

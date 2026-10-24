@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from src.application.players.use_cases import (
     AssignPlayerTeamUseCase,
     CreatePlayerUseCase,
+    CreateTeamRosterUseCase,
     DeletePlayerUseCase,
     GetPlayerStatsUseCase,
     ListPlayersByTeamUseCase,
@@ -93,6 +94,9 @@ class _TeamRepo:
     def is_owned_by(self, *, team_id: str, owner_user_id: str) -> bool:
         return (team_id, owner_user_id) in self.owned
 
+    def lock_owned(self, *, team_id: str, owner_user_id: str) -> bool:
+        return self.is_owned_by(team_id=team_id, owner_user_id=owner_user_id)
+
 
 class _Ids:
     def __init__(self) -> None:
@@ -148,6 +152,7 @@ def build_client(
             assign_player_team_use_case=AssignPlayerTeamUseCase(players=repo, teams=teams, uow=_Uow()),
             get_player_stats_use_case=GetPlayerStatsUseCase(players=repo),
             get_player_matches_use_case=_GetPlayerMatchesUseCase(),
+            create_team_roster_use_case=CreateTeamRosterUseCase(players=repo, teams=teams, ids=_Ids(), uow=_Uow()),
             catch_up=catch_up,
         )
     )
@@ -170,6 +175,113 @@ class TestPlayerCrud(unittest.TestCase):
         self.assertEqual(updated.json()["player"]["primary_position"], "C")
         self.assertEqual(client.delete(f"/players/{pid}").status_code, 204)
         self.assertEqual(client.get("/players").json()["players"], [])
+
+
+class TestOptionalProfile(unittest.TestCase):
+    def test_name_only_player_is_created_with_nulls(self) -> None:
+        client, _ = build_client()
+        created = client.post("/players", json={"first_name": "Ana", "last_name": "Paz"})
+        self.assertEqual(created.status_code, 201)
+        player = created.json()["player"]
+        for key in ("birth_date", "height_cm", "weight_kg", "primary_position", "jersey_number"):
+            self.assertIsNone(player[key], key)
+        listed = client.get("/players").json()["players"]
+        self.assertIsNone(listed[0]["birth_date"])
+
+    def test_put_without_the_optional_fields_clears_them(self) -> None:
+        client, _ = build_client()
+        pid = client.post("/players", json=VALID).json()["player"]["id"]
+        updated = client.put(f"/players/{pid}", json={"first_name": "Caitlin", "last_name": "Clark"})
+        self.assertEqual(updated.status_code, 200)
+        player = updated.json()["player"]
+        for key in ("birth_date", "height_cm", "weight_kg", "primary_position"):
+            self.assertIsNone(player[key], key)
+
+    def test_filled_optional_fields_are_still_checked(self) -> None:
+        client, _ = build_client()
+        base = {"first_name": "Ana", "last_name": "Paz"}
+        for extra in ({"height_cm": 0}, {"weight_kg": 401}, {"primary_position": ""}, {"birth_date": "x"}):
+            self.assertEqual(client.post("/players", json={**base, **extra}).status_code, 422, extra)
+        bad = client.post("/players", json={**base, "primary_position": "GK"})
+        self.assertEqual(bad.status_code, 422)
+        self.assertEqual(bad.json()["error"]["code"], "INVALID_POSITION")
+
+
+def _bulk(entries, team_id: str = TEAM_ID) -> dict:
+    return {
+        "team_id": team_id,
+        "players": [{"first_name": f"N{n}", "last_name": f"L{n}", "jersey_number": n} for n in entries],
+    }
+
+
+class TestBulkRoster(unittest.TestCase):
+    def _client(self, catch_up=None):
+        teams = _TeamRepo()
+        teams.owned.add((TEAM_ID, "scout-1"))
+        return build_client(team_repo=teams, catch_up=catch_up)
+
+    def test_creates_players_into_the_team(self) -> None:
+        client, repo = self._client()
+        response = client.post("/players/bulk", json=_bulk(["7", "10"]))
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual([p["jersey_number"] for p in body["created"]], ["7", "10"])
+        self.assertEqual({p["team_id"] for p in body["created"]}, {TEAM_ID})
+        self.assertIsNone(body["created"][0]["height_cm"])
+        self.assertEqual(body["skipped"], [])
+        self.assertEqual(len(repo.list_by_owner_and_team(owner_user_id="scout-1", team_id=TEAM_ID)), 2)
+
+    def test_repeating_the_request_skips_taken_jerseys(self) -> None:
+        client, repo = self._client()
+        client.post("/players/bulk", json=_bulk(["7", "10"]))
+        again = client.post("/players/bulk", json=_bulk(["7", "11"])).json()
+        self.assertEqual([p["jersey_number"] for p in again["created"]], ["11"])
+        self.assertEqual(again["skipped"], [{"jersey_number": "7", "reason": "jersey_taken"}])
+        self.assertEqual(len(repo.by_id), 3)
+
+    def test_duplicate_jerseys_in_the_payload_are_rejected(self) -> None:
+        client, repo = self._client()
+        self.assertEqual(client.post("/players/bulk", json=_bulk(["7", "7"])).status_code, 422)
+        self.assertEqual(repo.by_id, {})
+
+    def test_size_and_jersey_limits(self) -> None:
+        client, _ = self._client()
+        self.assertEqual(client.post("/players/bulk", json=_bulk([str(n) for n in range(31)])).status_code, 422)
+        self.assertEqual(client.post("/players/bulk", json=_bulk([str(n) for n in range(30)])).status_code, 201)
+        self.assertEqual(client.post("/players/bulk", json=_bulk([])).status_code, 422)
+        self.assertEqual(client.post("/players/bulk", json=_bulk(["100"])).status_code, 422)
+        missing = {"team_id": TEAM_ID, "players": [{"first_name": "A", "last_name": "B"}]}
+        self.assertEqual(client.post("/players/bulk", json=missing).status_code, 422)
+
+    def test_unknown_or_foreign_team_is_not_found(self) -> None:
+        client, repo = self._client()
+        response = client.post("/players/bulk", json=_bulk(["7"], team_id=OTHER_TEAM_ID))
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["error"]["code"], "TEAM_NOT_FOUND")
+        self.assertEqual(repo.by_id, {})
+
+    def test_team_is_caught_up_once(self) -> None:
+        class _CatchUp:
+            def __init__(self) -> None:
+                self.invalidated: list[str] = []
+                self.ran: list[str] = []
+
+            def invalidate_team(self, team_id: str) -> None:
+                self.invalidated.append(team_id)
+
+            def execute(self, *, team_id: str) -> None:
+                self.ran.append(team_id)
+
+            def pending(self, user_id: str) -> bool:
+                return False
+
+        catch_up = _CatchUp()
+        client, _ = self._client(catch_up=catch_up)
+        client.post("/players/bulk", json=_bulk(["7", "8", "9"]))
+        self.assertEqual(catch_up.invalidated, [TEAM_ID])
+        self.assertEqual(catch_up.ran, [TEAM_ID])
+        client.post("/players/bulk", json=_bulk(["7"]))  # nothing created: no new catch-up
+        self.assertEqual(catch_up.ran, [TEAM_ID])
 
 
 class TestJerseyNumber(unittest.TestCase):

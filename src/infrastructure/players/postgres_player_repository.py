@@ -164,10 +164,10 @@ class PostgresPlayerRepository:
         owner_user_id: str,
         first_name: str,
         last_name: str,
-        birth_date: date,
-        height_cm: int,
-        weight_kg: int,
-        primary_position: str,
+        birth_date: date | None,
+        height_cm: int | None,
+        weight_kg: int | None,
+        primary_position: str | None,
         jersey_number: str | None,
     ) -> Player | None:
         with self._connection.cursor(row_factory=dict_row) as cur:

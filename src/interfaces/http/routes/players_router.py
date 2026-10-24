@@ -28,11 +28,14 @@ from src.application.players.use_cases import (
     AssignPlayerTeamUseCase,
     CreatePlayerCommand,
     CreatePlayerUseCase,
+    CreateTeamRosterCommand,
+    CreateTeamRosterUseCase,
     DeletePlayerCommand,
     DeletePlayerUseCase,
     GetPlayerStatsUseCase,
     ListPlayersByTeamUseCase,
     ListPlayersUseCase,
+    RosterPlayerInput,
     UpdatePlayerCommand,
     UpdatePlayerUseCase,
 )
@@ -42,19 +45,45 @@ from src.interfaces.http.schemas.player_analysis import AnalysisStatsResponse, S
 JerseyNumber = Annotated[str, StringConstraints(pattern=r"^[0-9]{1,2}$")]
 
 
+MAX_BULK_PLAYERS = 30
+
+
+class RosterPlayerPayload(BaseModel):
+    first_name: str = Field(min_length=1, max_length=120)
+    last_name: str = Field(min_length=1, max_length=120)
+    jersey_number: JerseyNumber
+
+
+class BulkPlayersPayload(BaseModel):
+    """Name-and-jersey-only players to create into one team."""
+
+    team_id: UUID
+    players: list[RosterPlayerPayload] = Field(min_length=1, max_length=MAX_BULK_PLAYERS)
+
+    @field_validator("players")
+    @classmethod
+    def _jersey_numbers_are_unique(cls, players: list[RosterPlayerPayload]) -> list[RosterPlayerPayload]:
+        numbers = [player.jersey_number for player in players]
+        if len(set(numbers)) != len(numbers):
+            raise ValueError("jersey_number must be unique within the request")
+        return players
+
+
 class PlayerPayload(BaseModel):
     """Validated player payload used for create/update operations.
 
     Field bounds here are the HTTP contract; deeper business rules still execute in
-    application use cases and may return ``PlayerError``.
+    application use cases and may return ``PlayerError``. ``birth_date``, ``height_cm``,
+    ``weight_kg`` and ``primary_position`` are optional; on update (a full replace) an
+    omitted one is cleared to ``null``.
     """
 
     first_name: str = Field(min_length=1, max_length=120)
     last_name: str = Field(min_length=1, max_length=120)
-    birth_date: date
-    height_cm: int = Field(gt=0, le=300)
-    weight_kg: int = Field(gt=0, le=400)
-    primary_position: str = Field(min_length=1, max_length=120)
+    birth_date: date | None = None
+    height_cm: int | None = Field(default=None, gt=0, le=300)
+    weight_kg: int | None = Field(default=None, gt=0, le=400)
+    primary_position: str | None = Field(default=None, min_length=1, max_length=120)
     jersey_number: JerseyNumber | None = None
 
     @field_validator("jersey_number", mode="before")
@@ -73,7 +102,7 @@ def _to_player_response(player) -> dict[str, object]:
         "id": player.id,
         "first_name": player.first_name,
         "last_name": player.last_name,
-        "birth_date": player.birth_date.isoformat(),
+        "birth_date": player.birth_date.isoformat() if player.birth_date is not None else None,
         "height_cm": player.height_cm,
         "weight_kg": player.weight_kg,
         "primary_position": player.primary_position,
@@ -105,6 +134,7 @@ def create_players_router(
     assign_player_team_use_case: AssignPlayerTeamUseCase,
     get_player_stats_use_case: GetPlayerStatsUseCase,
     get_player_matches_use_case: GetPlayerMatchesUseCase,
+    create_team_roster_use_case: CreateTeamRosterUseCase | None = None,
     get_player_shot_chart_use_case: GetPlayerShotChartUseCase | None = None,
     get_player_analysis_stats_use_case: GetPlayerAnalysisStatsUseCase | None = None,
     catch_up: CatchUpPlayerAnalysisUseCase | None = None,
@@ -158,6 +188,43 @@ def create_players_router(
             return {"player": _to_player_response(player)}
         except PlayerError as exc:
             return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
+
+    if create_team_roster_use_case is not None:
+
+        @router.post("/bulk", status_code=HTTPStatus.CREATED, response_model=None)
+        def create_team_roster(payload: BulkPlayersPayload, request: Request, background_tasks: BackgroundTasks):
+            """Creates name-and-jersey-only players into one of the scout's teams, all or nothing.
+
+            A jersey number the team already has is skipped (reported in `skipped`), so repeating
+            the request creates nothing new. The team's stats are caught up once afterwards.
+            """
+
+            try:
+                result = create_team_roster_use_case.execute(
+                    CreateTeamRosterCommand(
+                        user_id=str(request.state.user_id),
+                        team_id=str(payload.team_id),
+                        players=[
+                            RosterPlayerInput(
+                                first_name=entry.first_name,
+                                last_name=entry.last_name,
+                                jersey_number=entry.jersey_number,
+                            )
+                            for entry in payload.players
+                        ],
+                    )
+                )
+                if result.created:
+                    _catch_up_team(background_tasks, str(payload.team_id))
+                return {
+                    "created": [_to_player_response(player) for player in result.created],
+                    "skipped": [
+                        {"jersey_number": number, "reason": "jersey_taken"}
+                        for number in result.skipped_jersey_numbers
+                    ],
+                }
+            except PlayerError as exc:
+                return JSONResponse(status_code=player_error_http_status(exc.code), content=exc.to_envelope())
 
     @router.get("", response_model=None)
     def list_players(request: Request, background_tasks: BackgroundTasks, team_id: UUID | None = None):

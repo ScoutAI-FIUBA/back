@@ -29,11 +29,16 @@
 Field constraints:
 - `first_name`: string, 1..120 chars
 - `last_name`: string, 1..120 chars
-- `birth_date`: date (`YYYY-MM-DD`)
-- `height_cm`: integer, `> 0`, `<= 300`
-- `weight_kg`: integer, `> 0`, `<= 400`
-- `primary_position`: string, 1..120 chars
+- `birth_date`: optional date (`YYYY-MM-DD`) or `null`
+- `height_cm`: optional integer, `> 0`, `<= 300`, or `null`
+- `weight_kg`: optional integer, `> 0`, `<= 400`, or `null`
+- `primary_position`: optional string, 1..120 chars, or `null`; when given it must be a known code
+  (`INVALID_POSITION`, 422 otherwise)
 - `jersey_number`: optional string of one or two digits (`^[0-9]{1,2}$`), or `null`
+
+`birth_date`, `height_cm`, `weight_kg` and `primary_position` may be omitted or `null`: a player can be created
+with just a name (and a jersey number) and completed later. `PUT` is a full replace, so omitting one of them there
+clears it to `null`. Responses return `null` for the ones not set.
 
 `jersey_number` is text rather than an integer so that `"00"` stays distinct from
 `"0"`, and so the value matches the string form the CV pipeline reads from
@@ -75,6 +80,26 @@ Player response includes:
 ```
 
 - `422 Unprocessable Entity`: invalid payload format/constraints.
+
+### POST /players/bulk
+- Creates name-and-jersey-only players straight into one of the scout's teams (used to build a roster from an
+  imported box score). All or nothing: one transaction, with the team row locked.
+- Body: `{ "team_id": "<uuid>", "players": [{ "first_name": "...", "last_name": "...", "jersey_number": "7" }] }`
+  with 1..30 players, `jersey_number` required (`^[0-9]{1,2}$`) and unique inside the request (422 otherwise).
+- A jersey number the team already has is skipped, so repeating the request creates nothing twice.
+- The team's player stats are caught up once afterwards, in the background.
+- `201 Created` response:
+
+```json
+{
+  "created": [ { "id": "...", "first_name": "Ana", "last_name": "Paz", "birth_date": null, "height_cm": null,
+                 "weight_kg": null, "primary_position": null, "jersey_number": "10", "team_id": "...", "stats": {} } ],
+  "skipped": [ { "jersey_number": "7", "reason": "jersey_taken" } ]
+}
+```
+
+- `404 Not Found`: `TEAM_NOT_FOUND` (missing or not the scout's team).
+- `422 Unprocessable Entity`: invalid payload.
 
 ### GET /players
 - Lists players ordered by `last_name ASC, first_name ASC`.
@@ -189,10 +214,12 @@ Player response includes:
   - `id` (`UUID`, primary key)
   - `first_name` (`VARCHAR(120)`)
   - `last_name` (`VARCHAR(120)`)
+- Optional (nullable since `src/infrastructure/players/migrations/004_player_profile_optional.sql`, which only
+  drops the `NOT NULL`s; the `> 0` checks still apply to filled values):
   - `birth_date` (`DATE`)
   - `height_cm` (`INTEGER`, check `> 0`)
   - `weight_kg` (`INTEGER`, check `> 0`)
-- `primary_position` (`VARCHAR(120)`)
+  - `primary_position` (`VARCHAR(120)`)
 - `team_id` (`UUID`, nullable, FK to `teams.id` with `ON DELETE SET NULL`)
 - `jersey_number` (`VARCHAR(2)`, nullable, check `^[0-9]{1,2}$`)
 
