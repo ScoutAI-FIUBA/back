@@ -29,7 +29,7 @@ class PostgresCatchUpLock(CatchUpLockPort):
     @contextmanager
     def try_acquire(self):
         try:
-            connection = psycopg.connect(self._dsn)
+            connection = psycopg.connect(self._dsn, prepare_threshold=None)
         except Exception:  # noqa: BLE001 - the catch-up is best effort
             logger.exception("Could not connect to take the player stats catch-up lock")
             yield False

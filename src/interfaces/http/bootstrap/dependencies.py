@@ -164,6 +164,9 @@ class OperationConnection:
     """
 
     def __init__(self, dsn: str) -> None:
+        # Supabase's transaction pooler hands out backend connections that other clients already
+        # prepared statements on, so psycopg's automatic server-side preparation (after five runs of
+        # the same query on one connection) fails with DuplicatePreparedStatement. Disable it.
         self._dsn = dsn
         self._current_connection: ContextVar[psycopg.Connection | None] = ContextVar(
             "auth_db_connection",
@@ -180,7 +183,7 @@ class OperationConnection:
                 yield cursor
             return
 
-        with psycopg.connect(self._dsn) as connection:
+        with psycopg.connect(self._dsn, prepare_threshold=None) as connection:
             with connection.cursor(*args, **kwargs) as cursor:
                 yield cursor
 
@@ -198,7 +201,7 @@ class OperationConnection:
                 yield
             return
 
-        with psycopg.connect(self._dsn) as connection:
+        with psycopg.connect(self._dsn, prepare_threshold=None) as connection:
             token = self._current_connection.set(connection)
             try:
                 with connection.transaction():
