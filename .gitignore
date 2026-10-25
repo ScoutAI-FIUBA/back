@@ -10,3 +10,6 @@ __pycache__/
 !.env.example
 *.env
 .obsidian/
+
+.coverage
+coverage*.xml
