@@ -47,6 +47,13 @@ class TeamRepositoryPort(ABC):
     def is_owned_by(self, *, team_id: str, owner_user_id: str) -> bool:
         raise NotImplementedError
 
+    @abstractmethod
+    def lock_owned(self, *, team_id: str, owner_user_id: str) -> bool:
+        """Like `is_owned_by`, but also locks the team row until the transaction ends, so concurrent
+        roster changes for the same team run one after another."""
+
+        raise NotImplementedError
+
 
 class TeamClockPort(ABC):
     """Time source contract used to create deterministic timestamps."""

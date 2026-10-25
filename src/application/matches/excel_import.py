@@ -14,6 +14,7 @@ from src.application.matches.errors import (
 )
 from src.application.players.ports import PlayerRepositoryPort
 from src.application.team.ports import TeamRepositoryPort
+from src.domain.players.jersey import normalize_jersey_number
 from src.domain.matches.box_score import BoxScoreLine, BoxScorePlayer, BoxScoreTeam, ParsedBoxScore
 from src.domain.matches.team_matching import name_similarity, roster_similarity, same_team
 
@@ -154,9 +155,10 @@ class PreviewMatchStatsImportUseCase:
                         "2P/3P/FT made"
                     )
                 if player.jersey_number is not None:
-                    if player.jersey_number in seen_numbers:
+                    number = normalize_jersey_number(player.jersey_number)
+                    if number in seen_numbers:
                         warnings.append(f"{block.name}: jersey number {player.jersey_number} appears twice")
-                    seen_numbers.add(player.jersey_number)
+                    seen_numbers.add(number)
                 player_id = self._link(player, roster, side, linked, unlinked, selected[side] is not None)
                 player_rows.append(
                     {
@@ -299,7 +301,7 @@ class PreviewMatchStatsImportUseCase:
         roster: dict[str, list[Any]] = {}
         for player in roster_players:
             if player.jersey_number:
-                roster.setdefault(player.jersey_number, []).append(player)
+                roster.setdefault(normalize_jersey_number(player.jersey_number), []).append(player)
         return roster
 
     @staticmethod
@@ -315,7 +317,7 @@ class PreviewMatchStatsImportUseCase:
         if not has_team or player.jersey_number is None:
             unlinked.append({**entry, "reason": "no_team_selected" if not has_team else "no_jersey_number"})
             return None
-        candidates = roster.get(player.jersey_number, [])
+        candidates = roster.get(normalize_jersey_number(player.jersey_number), [])
         if len(candidates) == 1:
             found = candidates[0]
             linked.append({**entry, "player_id": found.id, "roster_name": f"{found.first_name} {found.last_name}"})

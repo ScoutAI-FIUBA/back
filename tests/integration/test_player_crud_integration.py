@@ -319,3 +319,79 @@ def test_deleting_player_does_not_delete_team(client: TestClient) -> None:
     filtered = client.get("/players", params={"team_id": team_id})
     assert filtered.status_code == 200
     assert filtered.json()["players"] == []
+
+
+def test_player_with_only_a_name_round_trips_with_nulls(client: TestClient) -> None:
+    created = client.post("/players", json={"first_name": "Ana", "last_name": "Paz", "jersey_number": "7"})
+    assert created.status_code == 201
+    player_id = created.json()["player"]["id"]
+
+    listed = client.get("/players").json()["players"]
+    assert [p["id"] for p in listed] == [player_id]
+    for key in ("birth_date", "height_cm", "weight_kg", "primary_position"):
+        assert listed[0][key] is None
+
+    filled = client.put(f"/players/{player_id}", json={**_payload(), "first_name": "Ana"})
+    assert filled.status_code == 200
+    cleared = client.put(f"/players/{player_id}", json={"first_name": "Ana", "last_name": "Paz"})
+    assert cleared.status_code == 200
+    assert cleared.json()["player"]["height_cm"] is None
+    assert cleared.json()["player"]["birth_date"] is None
+
+
+def test_bulk_roster_creates_and_skips_taken_jerseys(client: TestClient) -> None:
+    team_id = client.post("/teams", json=_team_payload()).json()["team"]["id"]
+
+    def entry(number: str) -> dict[str, str]:
+        return {"first_name": f"P{number}", "last_name": f"Q{number}", "jersey_number": number}
+
+    first = client.post("/players/bulk", json={"team_id": team_id, "players": [entry("7"), entry("10")]})
+    assert first.status_code == 201
+    assert [p["jersey_number"] for p in first.json()["created"]] == ["7", "10"]
+
+    again = client.post("/players/bulk", json={"team_id": team_id, "players": [entry("7"), entry("11")]})
+    assert again.status_code == 201
+    assert [p["jersey_number"] for p in again.json()["created"]] == ["11"]
+    assert again.json()["skipped"] == [{"jersey_number": "7", "reason": "jersey_taken"}]
+
+    roster = client.get("/players", params={"team_id": team_id}).json()["players"]
+    assert sorted(p["jersey_number"] for p in roster) == ["10", "11", "7"]
+
+    missing_team = client.post("/players/bulk", json={"team_id": str(uuid4()), "players": [entry("1")]})
+    assert missing_team.status_code == 404
+    assert missing_team.json()["error"]["code"] == "TEAM_NOT_FOUND"
+    assert len(client.get("/players").json()["players"]) == 3
+
+
+def test_bulk_roster_is_all_or_nothing(client: TestClient) -> None:
+    from src.application.players.use_cases import (
+        CreateTeamRosterCommand,
+        CreateTeamRosterUseCase,
+        RosterPlayerInput,
+    )
+    from src.infrastructure.players.postgres_player_repository import PostgresPlayerRepository
+    from src.infrastructure.team.postgres_repository import PostgresTeamRepository
+    from src.interfaces.http.bootstrap.dependencies import OperationConnection, PsycopgUnitOfWork, UUIDIds
+
+    team_id = client.post("/teams", json=_team_payload()).json()["team"]["id"]
+    database_url = os.environ["DATABASE_URL"]
+    with psycopg.connect(database_url) as conn:
+        owner_id = str(conn.execute("SELECT owner_user_id FROM teams WHERE id = %s", (team_id,)).fetchone()[0])
+
+    connection = OperationConnection(database_url)
+    use_case = CreateTeamRosterUseCase(
+        players=PostgresPlayerRepository(connection=connection),
+        teams=PostgresTeamRepository(connection=connection),
+        ids=UUIDIds(),
+        uow=PsycopgUnitOfWork(connection),
+    )
+    # The second name does not fit VARCHAR(120): the first insert must roll back with it.
+    with pytest.raises(psycopg.errors.StringDataRightTruncation):
+        use_case.execute(
+            CreateTeamRosterCommand(
+                user_id=owner_id,
+                team_id=team_id,
+                players=[RosterPlayerInput("Ok", "Fine", "5"), RosterPlayerInput("X" * 121, "Long", "6")],
+            )
+        )
+    assert client.get("/players", params={"team_id": team_id}).json()["players"] == []

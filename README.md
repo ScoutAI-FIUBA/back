@@ -111,6 +111,7 @@ Note: CORS preflight `OPTIONS` requests are also allowed without auth.
 | --- | --- | --- | --- |
 | `POST` | `/players` | Yes | Create a player. |
 | `GET` | `/players` | Yes | List players; optional `team_id` query param filters by team UUID. |
+| `POST` | `/players/bulk` | Yes | Create up to 30 name-and-jersey-only players into one team (skips jerseys the team already has). |
 | `PUT` | `/players/{player_id}` | Yes | Update a player by UUID. |
 | `PUT` | `/players/{player_id}/team/{team_id}` | Yes | Assign a player to a team using UUIDs. |
 | `DELETE` | `/players/{player_id}` | Yes | Delete a player by UUID. |

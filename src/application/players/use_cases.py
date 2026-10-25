@@ -11,12 +11,14 @@ from src.application.players.errors import (
 )
 from src.application.players.ports import IdGeneratorPort, PlayerRepositoryPort, UnitOfWorkPort
 from src.application.team.ports import TeamRepositoryPort
+from src.domain.players.jersey import normalize_jersey_number
 from src.domain.players.entities import Player, build_empty_player_stats
 from src.domain.players.positions import VALID_POSITION_CODES, is_valid_position
 
 
-def _validate_position(code: str) -> None:
-    if not is_valid_position(code):
+def _validate_position(code: str | None) -> None:
+    # An omitted position is fine; a given one must still be a known code.
+    if code is not None and not is_valid_position(code):
         raise PlayerError(
             code=INVALID_POSITION,
             message=f"Invalid position {code!r}.",
@@ -29,10 +31,10 @@ class CreatePlayerCommand:
     user_id: str
     first_name: str
     last_name: str
-    birth_date: date
-    height_cm: int
-    weight_kg: int
-    primary_position: str
+    birth_date: date | None = None
+    height_cm: int | None = None
+    weight_kg: int | None = None
+    primary_position: str | None = None
     jersey_number: str | None = None
 
 
@@ -42,10 +44,10 @@ class UpdatePlayerCommand:
     id: str
     first_name: str
     last_name: str
-    birth_date: date
-    height_cm: int
-    weight_kg: int
-    primary_position: str
+    birth_date: date | None = None
+    height_cm: int | None = None
+    weight_kg: int | None = None
+    primary_position: str | None = None
     jersey_number: str | None = None
 
 
@@ -60,6 +62,27 @@ class AssignPlayerTeamCommand:
     user_id: str
     player_id: str
     team_id: str
+
+
+@dataclass(frozen=True)
+class RosterPlayerInput:
+    first_name: str
+    last_name: str
+    jersey_number: str
+
+
+@dataclass(frozen=True)
+class CreateTeamRosterCommand:
+    user_id: str
+    team_id: str
+    players: list[RosterPlayerInput]
+
+
+@dataclass(frozen=True)
+class CreateTeamRosterResult:
+    created: list[Player]
+    # Jersey numbers the team already had; those players were left as they were.
+    skipped_jersey_numbers: list[str]
 
 
 class CreatePlayerUseCase:
@@ -157,6 +180,60 @@ class AssignPlayerTeamUseCase:
         if player is None:
             raise PlayerError(code=PLAYER_NOT_FOUND, message="Player not found")
         return player
+
+
+class CreateTeamRosterUseCase:
+    """Creates name-and-jersey-only players straight into a team, all or nothing.
+
+    Safe to repeat: a jersey the team already has is skipped, not duplicated.
+    """
+
+    def __init__(
+        self,
+        *,
+        players: PlayerRepositoryPort,
+        teams: TeamRepositoryPort,
+        ids: IdGeneratorPort,
+        uow: UnitOfWorkPort,
+    ) -> None:
+        self._players = players
+        self._teams = teams
+        self._ids = ids
+        self._uow = uow
+
+    def execute(self, command: CreateTeamRosterCommand) -> CreateTeamRosterResult:
+        created: list[Player] = []
+        skipped: list[str] = []
+        with self._uow.transaction():
+            if not self._teams.lock_owned(team_id=command.team_id, owner_user_id=command.user_id):
+                raise PlayerError(code=TEAM_NOT_FOUND, message="Team not found")
+            taken = {
+                normalize_jersey_number(player.jersey_number)
+                for player in self._players.list_by_owner_and_team(
+                    owner_user_id=command.user_id, team_id=command.team_id
+                )
+                if player.jersey_number is not None
+            }
+            for entry in command.players:
+                number = normalize_jersey_number(entry.jersey_number)
+                if number in taken:
+                    skipped.append(entry.jersey_number)
+                    continue
+                taken.add(number)
+                created.append(
+                    self._players.create(
+                        Player(
+                            id=self._ids.new_id(),
+                            first_name=entry.first_name,
+                            last_name=entry.last_name,
+                            jersey_number=entry.jersey_number,
+                            owner_user_id=command.user_id,
+                            team_id=command.team_id,
+                            stats=build_empty_player_stats(),
+                        )
+                    )
+                )
+        return CreateTeamRosterResult(created=created, skipped_jersey_numbers=skipped)
 
 
 class GetPlayerStatsUseCase:

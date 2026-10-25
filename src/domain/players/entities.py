@@ -56,6 +56,8 @@ class Player:
     Invariants expected by callers:
     - `id` is a stable repository identity.
     - `team_id` is `None` for free agents, otherwise references an existing team.
+    - `birth_date`, `height_cm`, `weight_kg` and `primary_position` are optional (`None` until the
+      scout fills them in); a player may be created with just a name and a jersey number.
     - Anthropometric values use metric units (`height_cm`, `weight_kg`).
     - `jersey_number` is one or two digits as text, or `None` when unassigned.
     """
@@ -63,10 +65,10 @@ class Player:
     id: str
     first_name: str
     last_name: str
-    birth_date: date
-    height_cm: int
-    weight_kg: int
-    primary_position: str
+    birth_date: date | None = None
+    height_cm: int | None = None
+    weight_kg: int | None = None
+    primary_position: str | None = None
     jersey_number: str | None = None
     owner_user_id: str = ""
     team_id: str | None = None

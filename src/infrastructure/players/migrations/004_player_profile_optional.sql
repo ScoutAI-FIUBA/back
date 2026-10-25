@@ -1,0 +1,5 @@
+SET LOCAL lock_timeout = '5s';
+ALTER TABLE players ALTER COLUMN birth_date DROP NOT NULL;
+ALTER TABLE players ALTER COLUMN height_cm DROP NOT NULL;
+ALTER TABLE players ALTER COLUMN weight_kg DROP NOT NULL;
+ALTER TABLE players ALTER COLUMN primary_position DROP NOT NULL;

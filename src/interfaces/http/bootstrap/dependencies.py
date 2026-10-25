@@ -57,6 +57,7 @@ from src.application.matches.use_cases import (
 from src.application.players.use_cases import (
     AssignPlayerTeamUseCase,
     CreatePlayerUseCase,
+    CreateTeamRosterUseCase,
     DeletePlayerUseCase,
     GetPlayerStatsUseCase,
     ListPlayersByTeamUseCase,
@@ -270,6 +271,7 @@ class HttpDependencies:
     update_player_use_case: UpdatePlayerUseCase
     delete_player_use_case: DeletePlayerUseCase
     assign_player_team_use_case: AssignPlayerTeamUseCase
+    create_team_roster_use_case: CreateTeamRosterUseCase
     create_match_use_case: CreateMatchUseCase
     list_matches_use_case: ListMatchesUseCase
     get_match_use_case: GetMatchUseCase
@@ -589,6 +591,12 @@ def build_http_dependencies(
         assign_player_team_use_case=AssignPlayerTeamUseCase(
             players=players_repo,
             teams=teams_repo,
+            uow=uow,
+        ),
+        create_team_roster_use_case=CreateTeamRosterUseCase(
+            players=players_repo,
+            teams=teams_repo,
+            ids=ids,
             uow=uow,
         ),
         create_match_use_case=CreateMatchUseCase(matches=matches_repo, teams=teams_repo, ids=ids, uow=uow),
