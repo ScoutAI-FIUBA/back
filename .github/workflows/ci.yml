@@ -25,8 +25,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Run unit tests
-        run: pytest -m "not integration" tests
+      - name: Run unit tests with coverage
+        run: pytest -m "not integration" tests --cov=src --cov-report=term --cov-report=xml:coverage-unit.xml
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "### Unit test coverage" >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-unit
+          path: coverage-unit.xml
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -70,5 +83,18 @@ jobs:
       - name: Apply migrations
         run: python scripts/apply_migrations.py
 
-      - name: Run integration tests
-        run: pytest -m integration tests/integration -v
+      - name: Run integration tests with coverage
+        run: pytest -m integration tests/integration -v --cov=src --cov-report=term --cov-report=xml:coverage-integration.xml
+
+      - name: Coverage summary
+        if: always()
+        run: |
+          echo "### Integration test coverage" >> "$GITHUB_STEP_SUMMARY"
+          python -m coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-integration
+          path: coverage-integration.xml
