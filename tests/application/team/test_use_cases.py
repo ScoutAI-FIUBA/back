@@ -8,7 +8,16 @@ from src.application.team.ports import (
     TEAM_DELETE_CONFLICT_KIND_MATCH,
     TeamDeleteConflictError,
 )
-from src.application.team.use_cases import DeleteTeamCommand, DeleteTeamUseCase
+from datetime import datetime, timezone
+
+from src.application.team.use_cases import (
+    CreateTeamCommand,
+    CreateTeamUseCase,
+    DeleteTeamCommand,
+    DeleteTeamUseCase,
+    UpdateTeamCommand,
+    UpdateTeamUseCase,
+)
 
 
 class _TeamsRepo:
@@ -20,6 +29,59 @@ class _TeamsRepo:
         if self.raise_conflict_kind is not None:
             raise TeamDeleteConflictError("team delete conflict", kind=self.raise_conflict_kind)
         return True
+
+
+class _Clock:
+    def now(self):
+        return datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+class _Ids:
+    def new_id(self) -> str:
+        return "team-1"
+
+
+class _RecordingRepo:
+    def __init__(self) -> None:
+        self.created = None
+        self.update_kwargs = None
+
+    def create(self, team):
+        self.created = team
+        return team
+
+    def update(self, team_id, **kwargs):
+        self.update_kwargs = kwargs
+        return None
+
+
+class TestTeamIsOwnUseCases(unittest.TestCase):
+    def _create(self, **extra) -> _RecordingRepo:
+        repo = _RecordingRepo()
+        CreateTeamUseCase(teams=repo, clock=_Clock(), ids=_Ids()).execute(
+            CreateTeamCommand(user_id="u", name="n", short_name="s", city="c", country="x", **extra)
+        )
+        return repo
+
+    def test_create_defaults_to_rival(self) -> None:
+        self.assertFalse(self._create().created.is_own)
+
+    def test_create_passes_is_own(self) -> None:
+        self.assertTrue(self._create(is_own=True).created.is_own)
+
+    def _update(self, **extra) -> dict:
+        repo = _RecordingRepo()
+        UpdateTeamUseCase(teams=repo).execute(
+            UpdateTeamCommand(user_id="u", team_id="t", name="n", short_name="s", city="c", country="x", **extra)
+        )
+        return repo.update_kwargs
+
+    def test_update_defaults_to_keep(self) -> None:
+        self.assertIsNone(self._update()["is_own"])
+
+    def test_update_passes_is_own(self) -> None:
+        self.assertIs(self._update(is_own=False)["is_own"], False)
+        self.assertIs(self._update(is_own=True)["is_own"], True)
 
 
 class TestDeleteTeamUseCase(unittest.TestCase):

@@ -35,7 +35,15 @@ class TeamRepositoryPort(ABC):
 
     @abstractmethod
     def update(
-        self, team_id: str, *, owner_user_id: str, name: str, short_name: str, city: str, country: str
+        self,
+        team_id: str,
+        *,
+        owner_user_id: str,
+        name: str,
+        short_name: str,
+        city: str,
+        country: str,
+        is_own: bool | None = None,
     ) -> Team | None:
         raise NotImplementedError
 

@@ -16,8 +16,10 @@ from src.interfaces.http.routes.team_router import create_team_router
 
 
 class _TeamsRepo:
-    def __init__(self) -> None:
+    def __init__(self, *, stored_is_own: bool = False, exists: bool = False) -> None:
         self.raise_conflict = False
+        self.stored_is_own = stored_is_own
+        self.exists = exists
 
     def create(self, team: Team) -> Team:
         return team
@@ -26,9 +28,33 @@ class _TeamsRepo:
         del owner_user_id
         return []
 
-    def update(self, team_id: str, *, owner_user_id: str, name: str, short_name: str, city: str, country: str):
-        del team_id, owner_user_id, name, short_name, city, country
-        return None
+    def update(
+        self,
+        team_id: str,
+        *,
+        owner_user_id: str,
+        name: str,
+        short_name: str,
+        city: str,
+        country: str,
+        is_own: bool | None = None,
+    ):
+        del owner_user_id
+        if not self.exists:
+            return None
+        # Mirrors COALESCE(%(is_own)s, is_own) in the SQL adapter.
+        if is_own is not None:
+            self.stored_is_own = is_own
+        return Team(
+            id=team_id,
+            name=name,
+            short_name=short_name,
+            city=city,
+            country=country,
+            owner_user_id="user-1",
+            created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            is_own=self.stored_is_own,
+        )
 
     def delete(self, team_id: str, *, owner_user_id: str) -> bool:
         del team_id, owner_user_id
@@ -90,7 +116,10 @@ class _TeamStatsUseCase:
         )
 
 
-def _build_client(*, delete_conflict_code: str | None = None, missing_stats_team: bool = False) -> TestClient:
+def _build_client(
+    *, delete_conflict_code: str | None = None, missing_stats_team: bool = False, teams: _TeamsRepo | None = None
+) -> TestClient:
+    teams = teams or _TeamsRepo()
     app = FastAPI()
 
     @app.middleware("http")
@@ -100,9 +129,9 @@ def _build_client(*, delete_conflict_code: str | None = None, missing_stats_team
 
     app.include_router(
         create_team_router(
-            create_team_use_case=CreateTeamUseCase(teams=_TeamsRepo(), clock=_Clock(), ids=_Ids()),
-            list_teams_use_case=ListTeamsUseCase(teams=_TeamsRepo()),
-            update_team_use_case=UpdateTeamUseCase(teams=_TeamsRepo()),
+            create_team_use_case=CreateTeamUseCase(teams=teams, clock=_Clock(), ids=_Ids()),
+            list_teams_use_case=ListTeamsUseCase(teams=teams),
+            update_team_use_case=UpdateTeamUseCase(teams=teams),
             delete_team_use_case=_DeleteTeamUseCase(conflict_code=delete_conflict_code),
             get_team_stats_use_case=_TeamStatsUseCase(missing=missing_stats_team),
         )
@@ -110,7 +139,60 @@ def _build_client(*, delete_conflict_code: str | None = None, missing_stats_team
     return TestClient(app)
 
 
+_TEAM_BODY = {"name": "Alpha", "short_name": "ALP", "city": "Cordoba", "country": "Argentina"}
+_TEAM_URL = "/teams/00000000-0000-4000-8000-000000000001"
+
+
 class TestTeamRouter(unittest.TestCase):
+    def test_create_without_is_own_defaults_to_false(self) -> None:
+        response = _build_client().post("/teams", json=_TEAM_BODY)
+        self.assertEqual(response.status_code, 201)
+        self.assertIs(response.json()["team"]["is_own"], False)
+
+    def test_create_with_is_own_true(self) -> None:
+        response = _build_client().post("/teams", json={**_TEAM_BODY, "is_own": True})
+        self.assertEqual(response.status_code, 201)
+        self.assertIs(response.json()["team"]["is_own"], True)
+
+    def test_put_without_is_own_keeps_stored_value(self) -> None:
+        client = _build_client(teams=_TeamsRepo(stored_is_own=True, exists=True))
+        response = client.put(_TEAM_URL, json=_TEAM_BODY)
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.json()["team"]["is_own"], True)
+
+    def test_put_with_null_is_own_keeps_stored_value(self) -> None:
+        client = _build_client(teams=_TeamsRepo(stored_is_own=True, exists=True))
+        response = client.put(_TEAM_URL, json={**_TEAM_BODY, "is_own": None})
+        self.assertIs(response.json()["team"]["is_own"], True)
+
+    def test_put_with_false_changes_stored_value(self) -> None:
+        client = _build_client(teams=_TeamsRepo(stored_is_own=True, exists=True))
+        response = client.put(_TEAM_URL, json={**_TEAM_BODY, "is_own": False})
+        self.assertEqual(response.status_code, 200)
+        self.assertIs(response.json()["team"]["is_own"], False)
+
+    def test_put_with_true_changes_stored_value(self) -> None:
+        client = _build_client(teams=_TeamsRepo(stored_is_own=False, exists=True))
+        response = client.put(_TEAM_URL, json={**_TEAM_BODY, "is_own": True})
+        self.assertIs(response.json()["team"]["is_own"], True)
+
+    def test_list_includes_is_own(self) -> None:
+        teams = _TeamsRepo()
+        teams.list_by_owner = lambda *, owner_user_id: [  # type: ignore[method-assign]
+            Team(
+                id="t1",
+                name="A",
+                short_name="A",
+                city="c",
+                country="x",
+                owner_user_id=owner_user_id,
+                created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                is_own=True,
+            )
+        ]
+        response = _build_client(teams=teams).get("/teams")
+        self.assertIs(response.json()["teams"][0]["is_own"], True)
+
     def test_delete_team_maps_match_conflict_to_409_envelope(self) -> None:
         client = _build_client(delete_conflict_code=TEAM_HAS_MATCHES)
         response = client.delete("/teams/00000000-0000-4000-8000-000000000001")

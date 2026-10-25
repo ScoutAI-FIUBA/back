@@ -61,6 +61,7 @@ def _row_to_team(row: dict[str, Any] | None) -> Team | None:
         country=row["country"],
         owner_user_id=row["owner_user_id"],
         created_at=row["created_at"],
+        is_own=bool(row.get("is_own", False)),
     )
 
 
@@ -72,8 +73,11 @@ class PostgresTeamRepository:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
-                INSERT INTO teams (id, name, short_name, city, country, owner_user_id, created_at)
-                VALUES (%(id)s, %(name)s, %(short_name)s, %(city)s, %(country)s, %(owner_user_id)s, %(created_at)s)
+                INSERT INTO teams (id, name, short_name, city, country, owner_user_id, created_at, is_own)
+                VALUES (
+                    %(id)s, %(name)s, %(short_name)s, %(city)s, %(country)s, %(owner_user_id)s, %(created_at)s,
+                    %(is_own)s
+                )
                 RETURNING *
                 """,
                 asdict(team),
@@ -84,7 +88,7 @@ class PostgresTeamRepository:
     def list_by_owner(self, *, owner_user_id: str) -> list[Team]:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
-                "SELECT * FROM teams WHERE owner_user_id = %(owner)s ORDER BY created_at DESC",
+                "SELECT * FROM teams WHERE owner_user_id = %(owner)s ORDER BY is_own DESC, created_at DESC",
                 {"owner": owner_user_id},
             )
             rows = cur.fetchall()
@@ -96,7 +100,15 @@ class PostgresTeamRepository:
         return teams
 
     def update(
-        self, team_id: str, *, owner_user_id: str, name: str, short_name: str, city: str, country: str
+        self,
+        team_id: str,
+        *,
+        owner_user_id: str,
+        name: str,
+        short_name: str,
+        city: str,
+        country: str,
+        is_own: bool | None = None,
     ) -> Team | None:
         with self._connection.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -105,7 +117,8 @@ class PostgresTeamRepository:
                 SET name = %(name)s,
                     short_name = %(short_name)s,
                     city = %(city)s,
-                    country = %(country)s
+                    country = %(country)s,
+                    is_own = COALESCE(%(is_own)s, is_own)
                 WHERE id = %(id)s AND owner_user_id = %(owner)s
                 RETURNING *
                 """,
@@ -115,6 +128,7 @@ class PostgresTeamRepository:
                     "short_name": short_name,
                     "city": city,
                     "country": country,
+                    "is_own": is_own,
                     "owner": owner_user_id,
                 },
             )

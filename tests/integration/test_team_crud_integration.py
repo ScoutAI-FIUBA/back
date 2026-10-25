@@ -123,6 +123,31 @@ def test_team_crud_happy_path(client: TestClient) -> None:
     assert empty.json()["teams"] == []
 
 
+def test_team_is_own_round_trip_and_ordering(client: TestClient) -> None:
+    rival = client.post("/teams", json=_payload(uuid4().hex)).json()["team"]
+    own = client.post("/teams", json={**_payload(uuid4().hex), "is_own": True}).json()["team"]
+    assert rival["is_own"] is False
+    assert own["is_own"] is True
+
+    # Own team first, then rivals newest first.
+    newer_rival = client.post("/teams", json=_payload(uuid4().hex)).json()["team"]
+    listed = client.get("/teams").json()["teams"]
+    assert [team["id"] for team in listed] == [own["id"], newer_rival["id"], rival["id"]]
+    assert [team["is_own"] for team in listed] == [True, False, False]
+
+    body = {"name": "Renamed", "short_name": "REN", "city": "Cordoba", "country": "Argentina"}
+    kept = client.put(f"/teams/{own['id']}", json=body)
+    assert kept.status_code == 200
+    assert kept.json()["team"]["is_own"] is True
+
+    flipped = client.put(f"/teams/{own['id']}", json={**body, "is_own": False})
+    assert flipped.json()["team"]["is_own"] is False
+    promoted = client.put(f"/teams/{rival['id']}", json={**body, "is_own": True})
+    assert promoted.json()["team"]["is_own"] is True
+    listed = client.get("/teams").json()["teams"]
+    assert listed[0]["id"] == rival["id"]
+
+
 def test_team_update_and_delete_not_found(client: TestClient) -> None:
     missing_id = str(uuid4())
 
