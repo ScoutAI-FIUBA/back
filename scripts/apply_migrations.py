@@ -36,7 +36,7 @@ def main() -> None:
     ]
     migration_files = [migration for directory in migration_dirs for migration in sorted(directory.glob("*.sql"))]
 
-    with psycopg.connect(database_url) as conn:
+    with psycopg.connect(database_url, prepare_threshold=None) as conn:
         with conn.cursor() as cur:
             cur.execute(TRACKING_TABLE_SQL)
         conn.commit()
