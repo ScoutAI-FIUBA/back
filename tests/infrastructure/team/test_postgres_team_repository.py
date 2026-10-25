@@ -65,6 +65,7 @@ class TestPostgresTeamRepository(unittest.TestCase):
             "country": "Argentina",
             "owner_user_id": "user-1",
             "created_at": now,
+            "is_own": True,
         }
         created = repo.create(
             Team(
@@ -75,15 +76,20 @@ class TestPostgresTeamRepository(unittest.TestCase):
                 country="Argentina",
                 owner_user_id="user-1",
                 created_at=now,
+                is_own=True,
             )
         )
         self.assertEqual(created.short_name, "CARP")
+        self.assertTrue(created.is_own)
+        self.assertIn("is_own", conn.executed[0][0])
+        self.assertTrue(conn.executed[0][1]["is_own"])
         self.assertIn("INSERT INTO teams", conn.executed[0][0])
 
         conn.next_rows = [conn.next_row]
         listed = repo.list_by_owner(owner_user_id="user-1")
         self.assertEqual(len(listed), 1)
         self.assertIn("SELECT * FROM teams", conn.executed[1][0])
+        self.assertIn("ORDER BY is_own DESC, created_at DESC", conn.executed[1][0])
 
         conn.next_row = {
             "id": "8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d",
@@ -105,6 +111,8 @@ class TestPostgresTeamRepository(unittest.TestCase):
         self.assertIsNotNone(updated)
         self.assertEqual(updated.name, "Updated")
         self.assertIn("UPDATE teams", conn.executed[2][0])
+        self.assertIn("is_own = COALESCE(%(is_own)s, is_own)", conn.executed[2][0])
+        self.assertIsNone(conn.executed[2][1]["is_own"])
 
         conn.next_rowcount = 1
         deleted = repo.delete("8eb8ff76-53d5-4ad3-b8b1-f63665bbf59d", owner_user_id="user-1")

@@ -79,6 +79,7 @@ Note: CORS preflight `OPTIONS` requests are also allowed without auth.
   - `city` (TEXT, not null)
   - `country` (TEXT, not null)
   - `created_at` (TIMESTAMPTZ, not null)
+  - `is_own` (BOOLEAN, not null, default false) added by migration `003_team_is_own.sql`; own teams are listed first.
 
 ### Matches (edit and video link)
 

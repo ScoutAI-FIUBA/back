@@ -28,6 +28,7 @@ class CreateTeamRequest(BaseModel):
     short_name: str = Field(min_length=1)
     city: str = Field(min_length=1)
     country: str = Field(min_length=1)
+    is_own: bool = False
 
 
 class UpdateTeamRequest(BaseModel):
@@ -37,9 +38,11 @@ class UpdateTeamRequest(BaseModel):
     short_name: str = Field(min_length=1)
     city: str = Field(min_length=1)
     country: str = Field(min_length=1)
+    # Omitted or null keeps the stored value, so stale clients cannot reset it.
+    is_own: bool | None = None
 
 
-def _to_payload(team) -> dict[str, str]:
+def _to_payload(team) -> dict[str, object]:
     """Converts team entities into the route response payload shape."""
 
     return {
@@ -49,6 +52,7 @@ def _to_payload(team) -> dict[str, str]:
         "city": team.city,
         "country": team.country,
         "created_at": team.created_at.isoformat(),
+        "is_own": team.is_own,
     }
 
 
@@ -77,6 +81,7 @@ def create_team_router(
                 short_name=payload.short_name,
                 city=payload.city,
                 country=payload.country,
+                is_own=payload.is_own,
             )
         )
         return {"team": _to_payload(team)}
@@ -96,6 +101,7 @@ def create_team_router(
                 short_name=payload.short_name,
                 city=payload.city,
                 country=payload.country,
+                is_own=payload.is_own,
             )
         )
         if team is None:

@@ -20,6 +20,7 @@ class CreateTeamCommand:
     short_name: str
     city: str
     country: str
+    is_own: bool = False
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,7 @@ class UpdateTeamCommand:
     short_name: str
     city: str
     country: str
+    is_own: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ class CreateTeamUseCase:
                 country=command.country,
                 owner_user_id=command.user_id,
                 created_at=self._clock.now(),
+                is_own=command.is_own,
             )
         )
 
@@ -78,6 +81,7 @@ class UpdateTeamUseCase:
             short_name=command.short_name,
             city=command.city,
             country=command.country,
+            is_own=command.is_own,
         )
 
 

@@ -27,3 +27,4 @@ class Team:
     country: str
     owner_user_id: str
     created_at: datetime
+    is_own: bool = False
